@@ -163,6 +163,75 @@ class TestInvalidConfigurations:
             )
 
 
+class TestContextValidation:
+    """Input-context validation errors in evolve() are explicit and early."""
+
+    def test_evolve_rejects_empty_context(self) -> None:
+        reg = _minimal_registry()
+        config = _minimal_config()
+        class StubEvaluator:
+            def evaluate(
+                self,
+                programs: list[Program],
+                context: dict[str, np.ndarray],
+            ) -> list[FitnessResult]:
+                return [FitnessResult(objectives=(0.0,)) for _ in programs]
+
+        with pytest.raises(ValueError, match="at least one array"):
+            evolve(reg, config, StubEvaluator(), {})
+
+    def test_evolve_rejects_non_ndarray_context_entry(self) -> None:
+        reg = _minimal_registry()
+        config = _minimal_config()
+        context = {"x": [1, 2, 3]}
+
+        class StubEvaluator:
+            def evaluate(
+                self,
+                programs: list[Program],
+                context: dict[str, np.ndarray],
+            ) -> list[FitnessResult]:
+                return [FitnessResult(objectives=(0.0,)) for _ in programs]
+
+        with pytest.raises(TypeError, match="must be a numpy.ndarray"):
+            evolve(reg, config, StubEvaluator(), context)
+
+    def test_evolve_rejects_non_1d_context(self) -> None:
+        reg = _minimal_registry()
+        config = _minimal_config()
+        context = {"x": np.array([[1, 2], [3, 4]])}
+
+        class StubEvaluator:
+            def evaluate(
+                self,
+                programs: list[Program],
+                context: dict[str, np.ndarray],
+            ) -> list[FitnessResult]:
+                return [FitnessResult(objectives=(0.0,)) for _ in programs]
+
+        with pytest.raises(ValueError, match="must be 1D"):
+            evolve(reg, config, StubEvaluator(), context)
+
+    def test_evolve_rejects_mismatched_context_lengths(self) -> None:
+        reg = _minimal_registry()
+        config = _minimal_config()
+        context = {
+            "x": np.array([1, 2, 3], dtype=np.float64),
+            "y": np.array([1, 2], dtype=np.float64),
+        }
+
+        class StubEvaluator:
+            def evaluate(
+                self,
+                programs: list[Program],
+                context: dict[str, np.ndarray],
+            ) -> list[FitnessResult]:
+                return [FitnessResult(objectives=(0.0,)) for _ in programs]
+
+        with pytest.raises(ValueError, match="must all have the same length"):
+            evolve(reg, config, StubEvaluator(), context)
+
+
 # ===========================================================================
 # 3. TestNaNHandling
 # ===========================================================================

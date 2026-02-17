@@ -7,12 +7,14 @@ deduplication, and statistics tracking.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
+from typing import Literal, cast
 
 import numpy as np
 
 from liq.gp.config import FitnessConfig, GPConfig
+from liq.gp.errors import EvolutionError
 from liq.gp.evolution.constraints import apply_parsimony, enforce_constraints
 from liq.gp.evolution.diversity import (
     deduplicate_population,
@@ -28,6 +30,7 @@ from liq.gp.evolution.operators import (
     subtree_mutation,
 )
 from liq.gp.evolution.selection import (
+    compute_nsga2_rankings,
     get_elites,
     non_dominated_sort,
     select,
@@ -50,7 +53,7 @@ def evolve(
     *,
     fitness_config: FitnessConfig | None = None,
     callback: Callable[[GenerationStats], None] | None = None,
-    seed_programs: list[Program] | None = None,
+    seed_programs: Sequence[Program] | None = None,
 ) -> EvolutionResult:
     """Run the full evolution loop (FR-5.5).
 
@@ -68,7 +71,7 @@ def evolve(
         seed_programs: Optional list of 1 to ``population_size`` programs
             to seed the initial population (FR-5.1.4).  Seeds are placed
             directly; remaining slots are filled by applying variation
-            operators to the seeds.  ``None`` or ``[]`` uses random
+            operators to the seeds.  ``None`` uses random
             initialization.
 
     Returns:
@@ -79,9 +82,13 @@ def evolve(
         config = config.model_copy(update={"fitness": fitness_config})
 
     rng = np.random.default_rng(config.seed)
+    _validate_context(context)
 
     # --- Initialize population ---
-    if seed_programs:
+    if seed_programs is not None:
+        if len(seed_programs) == 0:
+            msg = "seed_programs must be None or contain at least 1 program"
+            raise EvolutionError(msg)
         from liq.gp.evolution.init import (
             initialize_seeded_population,
             validate_seed_programs,
@@ -90,7 +97,10 @@ def evolve(
         validate_seed_programs(seed_programs, config, registry=registry)
         init_rng = rng.spawn(1)[0]
         population = initialize_seeded_population(
-            seed_programs, registry, config, init_rng,
+            seed_programs,
+            registry,
+            config,
+            init_rng,
         )
     else:
         population = initialize_population(registry, config)
@@ -124,14 +134,31 @@ def evolve(
         # --- Apply parsimony pressure ---
         fitnesses = apply_parsimony(fitnesses, population, config)
 
+        # --- Reuse non-dominated sorting for NSGA-II ---
+        fronts = None
+        ranks = None
+        crowding = None
+        if config.selection_mode == "nsga2":
+            fronts, ranks, crowding = compute_nsga2_rankings(fitnesses, config)
+
         # --- Compute generation statistics ---
-        stats = _compute_stats(gen, population, fitnesses, config)
+        pareto_front_size = len(fronts[0]) if fronts else None
+        stats = _compute_stats(
+            gen,
+            population,
+            fitnesses,
+            config,
+            pareto_front_size=pareto_front_size,
+        )
+        fingerprints = _compute_semantic_fingerprints(
+            population,
+            ref_context,
+            config.semantic_precision,
+        )
         stats = replace(
             stats,
-            unique_semantics_ratio=_compute_unique_semantics_ratio(
-                population,
-                ref_context,
-                config,
+            unique_semantics_ratio=_compute_unique_semantics_ratio_from_fingerprints(
+                fingerprints
             ),
         )
 
@@ -155,10 +182,25 @@ def evolve(
                 break
 
         # --- Elitism ---
-        elites = get_elites(population, fitnesses, config)
+        elites = get_elites(
+            population,
+            fitnesses,
+            config,
+            fronts=fronts,
+            ranks=ranks,
+            crowding=crowding,
+        )
 
         # --- Selection ---
-        parents = select(population, fitnesses, config, rng)
+        parents = select(
+            population,
+            fitnesses,
+            config,
+            rng,
+            fronts=fronts,
+            ranks=ranks,
+            crowding=crowding,
+        )
 
         # --- Variation (crossover + mutation) ---
         offspring: list[Program] = []
@@ -245,6 +287,12 @@ def evolve(
                     config,
                     rng,
                 )
+            if indices and config.semantic_dedup_enabled:
+                fingerprints = _compute_semantic_fingerprints(
+                    population,
+                    ref_context,
+                    config.semantic_precision,
+                )
 
         # --- Semantic deduplication ---
         population, _ = deduplicate_population(
@@ -253,6 +301,7 @@ def evolve(
             registry,
             config,
             rng,
+            fingerprints=fingerprints,
         )
 
         # --- Generation reporting ---
@@ -291,6 +340,8 @@ def _compute_stats(
     population: list[Program],
     fitnesses: list[FitnessResult],
     config: GPConfig,
+    *,
+    pareto_front_size: int | None = None,
 ) -> GenerationStats:
     """Compute per-generation statistics."""
     n_objectives = len(config.fitness.objectives)
@@ -310,12 +361,12 @@ def _compute_stats(
     best_program_size = sizes[best_idx]
     mean_program_size = float(np.mean(sizes))
 
-    # Pareto front size
-    directions = _effective_directions(
-        config, len(fitnesses[0].objectives) if fitnesses else 0
-    )
-    fronts = non_dominated_sort(fitnesses, directions)
-    pareto_front_size = len(fronts[0]) if fronts else 0
+    if pareto_front_size is None:
+        directions = _effective_directions(
+            config, len(fitnesses[0].objectives) if fitnesses else 0
+        )
+        fronts = non_dominated_sort(fitnesses, directions)
+        pareto_front_size = len(fronts[0]) if fronts else 0
 
     return GenerationStats(
         generation=generation,
@@ -364,18 +415,25 @@ def _best_objectives(
     return tuple(result)
 
 
-def _effective_directions(config: GPConfig, objective_count: int) -> list[str]:
+ObjectiveDirection = Literal["maximize", "minimize"]
+
+
+def _effective_directions(
+    config: GPConfig,
+    objective_count: int,
+) -> list[ObjectiveDirection]:
     """Return objective directions aligned with fitness objective length."""
-    directions = list(config.fitness.objective_directions)
+    directions: list[ObjectiveDirection] = list(config.fitness.objective_directions)
     if objective_count > len(directions):
-        directions.extend(["maximize"] * (objective_count - len(directions)))
+        pad = ["maximize"] * (objective_count - len(directions))
+        directions.extend(cast(list[ObjectiveDirection], pad))
     return directions
 
 
 def _is_better(
     a: tuple[float, ...],
     b: tuple[float, ...],
-    directions: list[str],
+    directions: list[ObjectiveDirection],
 ) -> bool:
     """Return True if objective tuple ``a`` is lexicographically better than ``b``."""
     for i, direction in enumerate(directions):
@@ -391,7 +449,7 @@ def _primary_improvement(
     *,
     previous: float,
     current: float,
-    direction: str,
+    direction: ObjectiveDirection,
 ) -> float:
     """Return signed improvement for the primary objective."""
     if direction == "maximize":
@@ -405,16 +463,32 @@ def _compute_unique_semantics_ratio(
     config: GPConfig,
 ) -> float:
     """Compute semantic uniqueness ratio without mutating the population."""
-    if not population:
-        return 1.0
+    fingerprints = _compute_semantic_fingerprints(
+        population,
+        ref_context,
+        config.semantic_precision,
+    )
+    return _compute_unique_semantics_ratio_from_fingerprints(fingerprints)
 
+
+def _compute_semantic_fingerprints(
+    population: list[Program],
+    ref_context: dict[str, np.ndarray],
+    precision: int,
+) -> list[bytes]:
+    """Compute semantic fingerprints for each program in population order."""
     from liq.gp.evolution.diversity import compute_fingerprint
 
-    fingerprints = [
-        compute_fingerprint(program, ref_context, config.semantic_precision)
-        for program in population
+    return [
+        compute_fingerprint(program, ref_context, precision) for program in population
     ]
-    return len(set(fingerprints)) / len(population)
+
+
+def _compute_unique_semantics_ratio_from_fingerprints(fingerprints: list[bytes]) -> float:
+    """Compute semantic uniqueness ratio from pre-computed fingerprints."""
+    if not fingerprints:
+        return 1.0
+    return len(set(fingerprints)) / len(fingerprints)
 
 
 def _batch_context(
@@ -436,6 +510,28 @@ def _batch_context(
     indices = rng.choice(n, size=batch_size, replace=False)
     indices.sort()
     return {k: v[indices] for k, v in context.items()}
+
+
+def _validate_context(context: dict[str, np.ndarray]) -> None:
+    """Validate evaluation context shape and compatibility."""
+    if not context:
+        msg = "evaluation context must contain at least one array"
+        raise ValueError(msg)
+
+    lengths: set[int] = set()
+    for key, values in context.items():
+        if not isinstance(values, np.ndarray):
+            msg = f"context['{key}'] must be a numpy.ndarray"
+            raise TypeError(msg)
+        if values.ndim != 1:
+            msg = f"context['{key}'] must be 1D, got ndim={values.ndim}"
+            raise ValueError(msg)
+        lengths.add(len(values))
+
+    if len(lengths) != 1:
+        lengths_str = ", ".join(str(length) for length in sorted(lengths))
+        msg = f"context arrays must all have the same length, got [{lengths_str}]"
+        raise ValueError(msg)
 
 
 def _evaluate_population(

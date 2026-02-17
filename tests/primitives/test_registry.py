@@ -246,6 +246,24 @@ class TestQueryMethods:
         assert len(funcs) == 1
         assert funcs[0].name == "gt"
 
+    def test_cache_updates_after_registration(self, populated_registry: PrimitiveRegistry) -> None:
+        assert len(populated_registry.terminals(output_type=Series)) == 2
+        assert len(populated_registry.functions(output_type=Series)) == 2
+
+        populated_registry.register(
+            "const",
+            lambda x: x,
+            input_types=(Series,),
+            output_type=Series,
+            category="custom",
+        )
+
+        # Cache invalidation should make new terminal/function results visible.
+        assert len(populated_registry.terminals(output_type=Series)) == 2
+        assert len(populated_registry.functions(output_type=Series)) == 3
+        names = {p.name for p in populated_registry.functions()}
+        assert "const" in names
+
     def test_get_returns_primitive_info(
         self, populated_registry: PrimitiveRegistry
     ) -> None:

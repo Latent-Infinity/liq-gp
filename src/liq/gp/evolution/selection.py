@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import math
 from functools import cmp_to_key
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
+
+ObjectiveDirection = Literal["maximize", "minimize"]
+
 
 if TYPE_CHECKING:
     from numpy.random import Generator
@@ -20,22 +23,23 @@ if TYPE_CHECKING:
 
 def _effective_directions(
     fitnesses: list[FitnessResult],
-    base_directions: list[str],
-) -> list[str]:
+    base_directions: list[ObjectiveDirection],
+) -> list[ObjectiveDirection]:
     """Return objective directions aligned with objective tuple length."""
     if not fitnesses:
         return list(base_directions)
     n_objectives = len(fitnesses[0].objectives)
-    directions = list(base_directions)
+    directions: list[ObjectiveDirection] = list(base_directions)
     if n_objectives > len(directions):
-        directions.extend(["maximize"] * (n_objectives - len(directions)))
+        pad = ["maximize"] * (n_objectives - len(directions))
+        directions.extend(cast(list[ObjectiveDirection], pad))
     return directions
 
 
 def _compare_objectives_lexicographic(
     a: tuple[float, ...],
     b: tuple[float, ...],
-    directions: list[str],
+    directions: list[ObjectiveDirection],
 ) -> int:
     """Lexicographic comparison using objective directions.
 
@@ -60,7 +64,7 @@ def _compare_objectives_lexicographic(
 
 def non_dominated_sort(
     fitnesses: list[FitnessResult],
-    directions: list[str],
+    directions: list[ObjectiveDirection],
 ) -> list[list[int]]:
     """Partition indices into successive Pareto fronts.
 
@@ -139,7 +143,7 @@ def _dominates(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
 def crowding_distance(
     fitnesses: list[FitnessResult],
     front: list[int],
-    directions: list[str],
+    directions: list[ObjectiveDirection],
 ) -> list[float]:
     """Compute crowding distance for each individual in *front*.
 
@@ -190,6 +194,32 @@ def crowding_distance(
             distances[sorted_positions[i]] += (next_val - prev_val) / obj_range
 
     return distances
+
+
+# ---------------------------------------------------------------------------
+# NSGA-II shared ranking
+# ---------------------------------------------------------------------------
+
+
+def compute_nsga2_rankings(
+    fitnesses: list[FitnessResult],
+    config: GPConfig,
+) -> tuple[list[list[int]], list[int], list[float]]:
+    """Compute NSGA-II fronts, ranks, and crowding distances once."""
+    directions = _effective_directions(
+        fitnesses, list(config.fitness.objective_directions)
+    )
+    fronts = non_dominated_sort(fitnesses, directions)
+
+    ranks = [0] * len(fitnesses)
+    crowding = [0.0] * len(fitnesses)
+    for front_rank, front in enumerate(fronts):
+        distances = crowding_distance(fitnesses, front, directions)
+        for pos, idx in enumerate(front):
+            ranks[idx] = front_rank
+            crowding[idx] = distances[pos]
+
+    return fronts, ranks, crowding
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +292,9 @@ def nsga2_select(
     fitnesses: list[FitnessResult],
     config: GPConfig,
     rng: Generator,
+    fronts: list[list[int]] | None = None,
+    ranks: list[int] | None = None,
+    crowding: list[float] | None = None,
 ) -> list[Program]:
     """Select parents via NSGA-II selection.
 
@@ -285,20 +318,14 @@ def nsga2_select(
     list[Program]
         Selected parents (length = population_size - elitism_count).
     """
-    directions = _effective_directions(
-        fitnesses, list(config.fitness.objective_directions)
-    )
-    fronts = non_dominated_sort(fitnesses, directions)
-
-    # Assign rank and crowding distance to every individual
-    rank = [0] * len(population)
-    cd = [0.0] * len(population)
-
-    for front_rank, front in enumerate(fronts):
-        dists = crowding_distance(fitnesses, front, directions)
-        for pos, idx in enumerate(front):
-            rank[idx] = front_rank
-            cd[idx] = dists[pos]
+    if fronts is None or ranks is None or crowding is None:
+        fronts, ranks, crowding = compute_nsga2_rankings(fitnesses, config)
+    elif len(ranks) != len(population) or len(crowding) != len(population):
+        msg = "ranks and crowding must have length equal to population size"
+        raise ValueError(msg)
+    elif len(fronts) == 0:
+        ranks = [0] * len(population)
+        crowding = [0.0] * len(population)
 
     n_select = config.population_size - config.elitism_count
     pop_size = len(population)
@@ -307,7 +334,7 @@ def nsga2_select(
     for _ in range(n_select):
         # Binary tournament using NSGA-II crowded comparison
         i, j = rng.choice(pop_size, size=2, replace=False)
-        winner = _crowded_compare(i, j, rank, cd)
+        winner = _crowded_compare(i, j, ranks, crowding)
         selected.append(population[winner])
 
     return selected
@@ -334,6 +361,9 @@ def get_elites(
     population: list[Program],
     fitnesses: list[FitnessResult],
     config: GPConfig,
+    fronts: list[list[int]] | None = None,
+    ranks: list[int] | None = None,
+    crowding: list[float] | None = None,
 ) -> list[Program]:
     """Return elite individuals to carry forward unchanged.
 
@@ -364,8 +394,14 @@ def get_elites(
 
     if config.selection_mode == "tournament":
         return _tournament_elites(population, fitnesses, config)
-    else:
-        return _nsga2_elites(population, fitnesses, config)
+    return _nsga2_elites(
+        population,
+        fitnesses,
+        config,
+        fronts=fronts,
+        ranks=ranks,
+        crowding=crowding,
+    )
 
 
 def _tournament_elites(
@@ -398,12 +434,19 @@ def _nsga2_elites(
     population: list[Program],
     fitnesses: list[FitnessResult],
     config: GPConfig,
+    fronts: list[list[int]] | None = None,
+    ranks: list[int] | None = None,
+    crowding: list[float] | None = None,
 ) -> list[Program]:
     """First Pareto front elites for multi-objective mode."""
-    directions = _effective_directions(
-        fitnesses, list(config.fitness.objective_directions)
-    )
-    fronts = non_dominated_sort(fitnesses, directions)
+    if fronts is None or ranks is None or crowding is None:
+        fronts, ranks, crowding = compute_nsga2_rankings(fitnesses, config)
+    elif len(ranks) != len(population) or len(crowding) != len(population):
+        msg = "ranks and crowding must have length equal to population size"
+        raise ValueError(msg)
+    elif len(fronts) == 0:
+        ranks = [0] * len(population)
+        crowding = [0.0] * len(population)
 
     elites: list[Program] = []
     for front in fronts:
@@ -414,9 +457,10 @@ def _nsga2_elites(
             elites.extend(population[i] for i in front)
         else:
             # Sort by crowding distance (descending) and take the top
-            dists = crowding_distance(fitnesses, front, directions)
             paired = sorted(
-                zip(front, dists, strict=True), key=lambda x: x[1], reverse=True
+                zip(front, (crowding[idx] for idx in front), strict=True),
+                key=lambda x: x[1],
+                reverse=True,
             )
             elites.extend(population[idx] for idx, _ in paired[:remaining])
 
@@ -433,6 +477,9 @@ def select(
     fitnesses: list[FitnessResult],
     config: GPConfig,
     rng: Generator,
+    fronts: list[list[int]] | None = None,
+    ranks: list[int] | None = None,
+    crowding: list[float] | None = None,
 ) -> list[Program]:
     """Select parents using the configured selection mode.
 
@@ -454,8 +501,16 @@ def select(
     """
     if config.selection_mode == "tournament":
         return tournament_select(population, fitnesses, config, rng)
-    elif config.selection_mode == "nsga2":
-        return nsga2_select(population, fitnesses, config, rng)
+    if config.selection_mode == "nsga2":
+        return nsga2_select(
+            population,
+            fitnesses,
+            config,
+            rng,
+            fronts=fronts,
+            ranks=ranks,
+            crowding=crowding,
+        )
     else:
         msg = f"Unknown selection mode: {config.selection_mode!r}"
         raise ValueError(msg)

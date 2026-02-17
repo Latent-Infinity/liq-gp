@@ -8,6 +8,7 @@ import numpy as np
 
 from liq.gp.config import FitnessConfig, GPConfig
 from liq.gp.evolution.selection import (
+    compute_nsga2_rankings,
     crowding_distance,
     get_elites,
     non_dominated_sort,
@@ -379,6 +380,23 @@ class TestNSGA2Select:
         s2 = nsga2_select(pop, fit, config, np.random.default_rng(42))
         assert s1 == s2
 
+    def test_select_with_provided_ranking(self) -> None:
+        pop = _make_programs(12)
+        fit = [_make_fitness((float(i), float(20 - i))) for i in range(12)]
+        config = _nsga2_config(population_size=12, elitism_count=4)
+        fronts, ranks, crowding = compute_nsga2_rankings(fit, config)
+        expected = nsga2_select(pop, fit, config, np.random.default_rng(42))
+        observed = nsga2_select(
+            pop,
+            fit,
+            config,
+            np.random.default_rng(42),
+            fronts=fronts,
+            ranks=ranks,
+            crowding=crowding,
+        )
+        assert observed == expected
+
 
 # ===========================================================================
 # Elitism
@@ -483,6 +501,22 @@ class TestGetElites:
         fit = [_make_fitness((float(i),)) for i in range(10)]
         config = _tournament_config(elitism_count=0)
         assert get_elites(pop, fit, config) == []
+
+    def test_nsga2_elites_with_provided_ranking(self) -> None:
+        pop = _make_programs(12)
+        fit = [_make_fitness((float(i), float(20 - i))) for i in range(12)]
+        config = _nsga2_config(population_size=12, elitism_count=4)
+        fronts, ranks, crowding = compute_nsga2_rankings(fit, config)
+        expected = get_elites(pop, fit, config)
+        observed = get_elites(
+            pop,
+            fit,
+            config,
+            fronts=fronts,
+            ranks=ranks,
+            crowding=crowding,
+        )
+        assert observed == expected
 
 
 # ===========================================================================

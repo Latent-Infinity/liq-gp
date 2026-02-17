@@ -345,6 +345,24 @@ class TestInitializeSeededPopulation:
             assert prog.depth <= 2
             assert prog.size <= 3
 
+    def test_fallback_exhaustion_raises_evolution_error(self, monkeypatch) -> None:
+        """If operator + fallback cannot satisfy constraints, raise EvolutionError."""
+        reg = _make_registry()
+        config = _make_config(population_size=20, max_depth=3)
+        rng = np.random.default_rng(1)
+        seed = _make_simple_tree(reg)
+
+        import liq.gp.evolution.constraints as constraints_mod
+        import liq.gp.evolution.init as init_mod
+
+        def always_false(_program: Program, _config: object) -> bool:
+            return False
+
+        monkeypatch.setattr(constraints_mod, "enforce_constraints", always_false)
+
+        with pytest.raises(EvolutionError, match="Unable to generate enough valid"):
+            init_mod.initialize_seeded_population([seed], reg, config, rng)
+
 
 # ===========================================================================
 # 3. Engine integration tests
@@ -455,16 +473,13 @@ class TestEvolveWithSeeds:
         # Same seed + same config + no seeds = same result
         assert result1.best_program == result2.best_program
 
-    def test_evolve_empty_list_same_as_none(self) -> None:
-        """seed_programs=[] should behave the same as None."""
+    def test_evolve_empty_list_raises(self) -> None:
+        """seed_programs=[] is rejected."""
         reg = _make_registry()
         config = _make_evolve_config()
         ctx = _make_context()
-
-        result1 = evolve(reg, config, _SimpleFitnessEvaluator(), ctx)
-        result2 = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[])
-
-        assert result1.best_program == result2.best_program
+        with pytest.raises(EvolutionError, match="seed_programs must be None"):
+            evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[])
 
     def test_evolve_returns_evolution_result(self) -> None:
         reg = _make_registry()
@@ -553,6 +568,101 @@ class TestEvolveWithSeeds:
         seed = _make_simple_tree(reg)
         result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
         assert isinstance(result, EvolutionResult)
+
+    def test_constant_optimization_updates_dedup_fingerprints(self, monkeypatch) -> None:
+        reg = _make_registry()
+        add_primitive = reg.get("add")
+        config = _make_evolve_config(
+            population_size=10,
+            generations=1,
+            constant_opt_enabled=True,
+            semantic_dedup_enabled=True,
+            simplification_enabled=False,
+        )
+        context = _make_context()
+
+        # Precompute a canonical program that every optimized individual collapses to.
+        canonical_program = FunctionNode(
+            primitive=add_primitive,
+            children=(ConstantNode(0.0), ConstantNode(0.0)),
+        )
+
+        # Use deterministic seeds with unique constants so initial fingerprints differ.
+        seeds: list[Program] = [
+            FunctionNode(
+                primitive=add_primitive,
+                children=(ConstantNode(float(i)), ConstantNode(float(i))),
+            )
+            for i in range(config.population_size)
+        ]
+
+        captured: dict[str, int | None] = {}
+
+        def _select_all(
+            _population: list[Program], _fitnesses: list[FitnessResult], _config: GPConfig
+        ) -> list[int]:
+            return list(range(config.population_size))
+
+        def _flatten_to_canonical(
+            _program: Program,
+            _evaluator: object,
+            _context: dict[str, np.ndarray],
+            _config: GPConfig,
+            _rng: np.random.Generator,
+        ) -> Program:
+            return canonical_program
+
+        # Spy on the fingerprints forwarded into dedup so we can verify they
+        # reflect post-optimization semantics.
+        import liq.gp.evolution.diversity as diversity_mod
+
+        original_dedup = diversity_mod.deduplicate_population
+
+        def _dedup_spy(
+            population: list[Program],
+            ref_context: dict[str, np.ndarray],
+            registry: PrimitiveRegistry,
+            dedup_config: GPConfig,
+            dedup_rng: np.random.Generator,
+            fingerprints: list[bytes] | None = None,
+        ) -> tuple[list[Program], float]:
+            captured["fingerprint_count"] = None if fingerprints is None else len(set(fingerprints))
+            return original_dedup(
+                population,
+                ref_context,
+                registry,
+                dedup_config,
+                dedup_rng,
+                fingerprints=fingerprints,
+            )
+
+        # Configure constant optimization and dedup instrumentation.
+        import liq.gp.program.constants as constants_mod
+
+        monkeypatch.setattr(
+            constants_mod,
+            "select_for_optimization",
+            _select_all,
+        )
+        monkeypatch.setattr(
+            constants_mod,
+            "optimize_constants",
+            _flatten_to_canonical,
+        )
+        monkeypatch.setattr(
+            "liq.gp.evolution.engine.deduplicate_population",
+            _dedup_spy,
+        )
+
+        result = evolve(
+            reg,
+            config,
+            _SimpleFitnessEvaluator(),
+            context,
+            seed_programs=seeds,
+        )
+        assert isinstance(result, EvolutionResult)
+        assert captured.get("fingerprint_count") == 1
 
     def test_evolve_with_seeds_and_semantic_dedup(self) -> None:
         reg = _make_registry()

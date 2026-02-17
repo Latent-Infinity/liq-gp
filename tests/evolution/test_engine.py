@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from liq.gp.config import GPConfig
+from liq.gp.config import FitnessConfig, GPConfig
 from liq.gp.primitives.registry import PrimitiveRegistry
 from liq.gp.program.ast import Program
 from liq.gp.program.eval import evaluate
@@ -88,6 +88,31 @@ class SimpleFitnessEvaluator:
                 results.append(FitnessResult(objectives=(-mse,)))
             except Exception:
                 results.append(FitnessResult(objectives=(-1e10,)))
+        return results
+
+
+class MultiObjectiveEvaluator:
+    """Two-objective evaluator used for NSGA-II coverage tests."""
+
+    def __init__(self, context: dict[str, np.ndarray]) -> None:
+        self.context = context
+
+    def evaluate(
+        self,
+        programs: list[Program],
+        context: dict[str, np.ndarray],
+    ) -> list[FitnessResult]:
+        target = 2.0 * context["x"]
+        results: list[FitnessResult] = []
+        for prog in programs:
+            try:
+                output = evaluate(prog, context)
+                mse = float(np.mean((output - target) ** 2))
+                results.append(
+                    FitnessResult(objectives=(-mse, float(-len(prog.constants) - prog.size)))
+                )
+            except Exception:
+                results.append(FitnessResult(objectives=(-1e10, -1e10)))
         return results
 
 
@@ -241,6 +266,31 @@ class TestFitnessImprovement:
         first = result.fitness_history[0].best_fitness[0]
         last = result.fitness_history[-1].best_fitness[0]
         assert last >= first
+
+    def test_nsga2_selection_runs(self) -> None:
+        from liq.gp.evolution.engine import evolve
+
+        reg = _make_registry()
+        config = _make_config(
+            generations=3,
+            population_size=20,
+            selection_mode="nsga2",
+            fitness=FitnessConfig(
+                objectives=["mse", "complexity"],
+                objective_directions=["minimize", "maximize"],
+            ),
+        )
+        context = _make_context()
+        evaluator = MultiObjectiveEvaluator(context)
+
+        result = evolve(
+            reg,
+            config,
+            evaluator,
+            context,
+        )
+        assert len(result.fitness_history) == 3
+        assert isinstance(result.pareto_front, list)
 
 
 # ===========================================================================

@@ -57,8 +57,8 @@ def _eval_node(
 ) -> np.ndarray:
     """Recursively evaluate a single node."""
     # Cache lookup by (structural hash, context identity) (FR-4.7)
-    cache_key = (hash(node), context_id)
-    if cache is not None and cache_key in cache:
+    cache_key = (hash(node), context_id) if cache is not None else None
+    if cache_key is not None and cache_key in cache:
         return cache[cache_key]
 
     result: np.ndarray
@@ -93,7 +93,7 @@ def _eval_node(
     elif result.dtype != np.float64:
         result = result.astype(np.float64)
 
-    if cache is not None:
+    if cache_key is not None:
         cache[cache_key] = result
 
     return result

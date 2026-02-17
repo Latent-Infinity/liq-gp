@@ -356,3 +356,53 @@ class TestDeduplicatePopulation:
         rng = np.random.default_rng(0)
         _, ratio = deduplicate_population(programs, ref, reg, config, rng)
         assert ratio == pytest.approx(1 / 2)
+
+    def test_deduplicate_population_accepts_precomputed_fingerprints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FR-8.4: caller-provided fingerprints are consumed directly."""
+        ctx = _make_context()
+        ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
+        reg = _make_registry()
+        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        close_node = TerminalNode(name="close", output_type=Series)
+        volume_node = TerminalNode(name="volume", output_type=Series)
+        programs: list[Program] = [close_node, volume_node]
+        fingerprints = [
+            compute_fingerprint(close_node, ref, precision=6),
+            compute_fingerprint(volume_node, ref, precision=6),
+        ]
+
+        def _unexpected_compute(*_args: object, **_kwargs: object) -> bytes:
+            raise RuntimeError("compute_fingerprint should not be called")
+
+        import liq.gp.evolution.diversity as diversity
+
+        monkeypatch.setattr(diversity, "compute_fingerprint", _unexpected_compute)
+        new_pop, _ = deduplicate_population(
+            programs,
+            ref,
+            reg,
+            config,
+            np.random.default_rng(0),
+            fingerprints=fingerprints,
+        )
+        assert new_pop == programs
+
+    def test_deduplicate_population_validates_fingerprint_length(self) -> None:
+        """FR-8.4: fingerprint length must match population length."""
+        ctx = _make_context()
+        ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
+        reg = _make_registry()
+        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        close_node = TerminalNode(name="close", output_type=Series)
+        bad_fingerprints = [compute_fingerprint(close_node, ref, precision=6)]
+        with pytest.raises(ValueError, match="must be provided for every individual"):
+            deduplicate_population(
+                [close_node, close_node],
+                ref,
+                reg,
+                config,
+                np.random.default_rng(0),
+                fingerprints=bad_fingerprints,
+            )

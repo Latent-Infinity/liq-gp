@@ -11,6 +11,7 @@ to the seeds.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -212,7 +213,7 @@ def _collect_primitives(program: Program) -> list[str]:
 
 
 def validate_seed_programs(
-    seeds: list[Program],
+    seeds: Sequence[Program],
     config: GPConfig,
     *,
     output_type: GPType | None = None,
@@ -284,7 +285,7 @@ def validate_seed_programs(
 
 
 def initialize_seeded_population(
-    seeds: list[Program],
+    seeds: Sequence[Program],
     registry: PrimitiveRegistry,
     config: GPConfig,
     rng: np.random.Generator,
@@ -381,10 +382,22 @@ def initialize_seeded_population(
     # couldn't produce enough valid offspring
     if len(offspring) < remaining:
         output_type = seeds[0].output_type if seeds else Series
-        while len(offspring) < remaining:
+        fallback_attempts = 0
+        max_fallback_attempts = remaining * 10
+        while len(offspring) < remaining and fallback_attempts < max_fallback_attempts:
+            fallback_attempts += 1
             depth = int(rng.integers(1, config.max_depth + 1))
             tree = generate_grow(registry, depth, output_type, rng)
             if enforce_constraints(tree, config):
                 offspring.append(tree)
+
+    if len(offspring) < remaining:
+        msg = (
+            "Unable to generate enough valid seeded offspring with the current "
+            "constraints; adjust max_depth, max_size, or constraints."
+        )
+        from liq.gp.errors import EvolutionError
+
+        raise EvolutionError(msg)
 
     return population + offspring[:remaining]

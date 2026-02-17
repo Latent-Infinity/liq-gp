@@ -6,6 +6,7 @@ and duplicate replacement to maintain population diversity.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -85,6 +86,7 @@ def deduplicate_population(
     registry: PrimitiveRegistry,
     config: GPConfig,
     rng: np.random.Generator,
+    fingerprints: Sequence[bytes] | None = None,
 ) -> tuple[list[Program], float]:
     """Replace semantically duplicate programs with new random individuals.
 
@@ -103,6 +105,7 @@ def deduplicate_population(
         registry: Primitive registry (used for generating replacements).
         config: GP configuration (dedup settings, max_depth).
         rng: NumPy random generator.
+        fingerprints: Optional pre-computed semantic fingerprints in population order.
 
     Returns:
         A tuple of (new_population, unique_semantics_ratio).
@@ -112,11 +115,16 @@ def deduplicate_population(
 
     precision = config.semantic_precision
     pop_size = len(population)
-
-    # Compute fingerprints for every individual
-    fingerprints = [
-        compute_fingerprint(prog, ref_context, precision) for prog in population
-    ]
+    if fingerprints is None:
+        fingerprints = [
+            compute_fingerprint(prog, ref_context, precision) for prog in population
+        ]
+    elif len(fingerprints) != pop_size:
+        msg = (
+            "fingerprints must be provided for every individual in "
+            "population and in population order"
+        )
+        raise ValueError(msg)
 
     # Count unique fingerprints for the ratio metric
     unique_count = len(set(fingerprints))

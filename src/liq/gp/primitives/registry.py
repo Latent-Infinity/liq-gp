@@ -67,6 +67,8 @@ class PrimitiveRegistry:
 
     def __init__(self) -> None:
         self._primitives: dict[str, PrimitiveInfo] = {}
+        self._terminals_cache: dict[GPType | None, list[PrimitiveInfo]] = {}
+        self._functions_cache: dict[GPType | None, list[PrimitiveInfo]] = {}
 
     def register(
         self,
@@ -119,6 +121,8 @@ class PrimitiveRegistry:
             callable=callable,
             param_specs=param_specs,
         )
+        self._terminals_cache = {}
+        self._functions_cache = {}
 
     def primitive(
         self,
@@ -188,14 +192,32 @@ class PrimitiveRegistry:
 
     def terminals(self, output_type: GPType | None = None) -> list[PrimitiveInfo]:
         """List terminal primitives (arity 0) (FR-3.5)."""
-        result = [p for p in self._primitives.values() if p.arity == 0]
-        if output_type is not None:
-            result = [p for p in result if p.output_type == output_type]
-        return result
+        if output_type in self._terminals_cache:
+            return list(self._terminals_cache[output_type])
+
+        if output_type is None:
+            result = [p for p in self._primitives.values() if p.arity == 0]
+        else:
+            result = [
+                p
+                for p in self._primitives.values()
+                if p.arity == 0 and p.output_type == output_type
+            ]
+        self._terminals_cache[output_type] = result
+        return list(result)
 
     def functions(self, output_type: GPType | None = None) -> list[PrimitiveInfo]:
         """List function primitives (arity > 0) (FR-3.5)."""
-        result = [p for p in self._primitives.values() if p.arity > 0]
-        if output_type is not None:
-            result = [p for p in result if p.output_type == output_type]
-        return result
+        if output_type in self._functions_cache:
+            return list(self._functions_cache[output_type])
+
+        if output_type is None:
+            result = [p for p in self._primitives.values() if p.arity > 0]
+        else:
+            result = [
+                p
+                for p in self._primitives.values()
+                if p.arity > 0 and p.output_type == output_type
+            ]
+        self._functions_cache[output_type] = result
+        return list(result)

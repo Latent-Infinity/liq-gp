@@ -117,9 +117,13 @@ class FunctionNode:
 
     primitive: PrimitiveInfo
     children: tuple[Program, ...]
+    _depth: int = field(init=False, repr=False)
+    _size: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         _check_children_types(self.primitive, self.children)
+        object.__setattr__(self, "_depth", 1 + max(c.depth for c in self.children))
+        object.__setattr__(self, "_size", 1 + sum(c.size for c in self.children))
 
     @property
     def output_type(self) -> GPType:
@@ -127,11 +131,11 @@ class FunctionNode:
 
     @property
     def depth(self) -> int:
-        return 1 + max(c.depth for c in self.children)
+        return self._depth
 
     @property
     def size(self) -> int:
-        return 1 + sum(c.size for c in self.children)
+        return self._size
 
     @property
     def constants(self) -> list[ConstantNode]:
@@ -163,9 +167,13 @@ class ParameterizedNode:
     primitive: PrimitiveInfo
     children: tuple[Program, ...]
     params: dict[str, int | float]
+    _depth: int = field(init=False, repr=False)
+    _size: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         _check_children_types(self.primitive, self.children)
+        object.__setattr__(self, "_depth", 1 + max(c.depth for c in self.children))
+        object.__setattr__(self, "_size", 1 + sum(c.size for c in self.children))
 
     @property
     def output_type(self) -> GPType:
@@ -173,11 +181,11 @@ class ParameterizedNode:
 
     @property
     def depth(self) -> int:
-        return 1 + max(c.depth for c in self.children)
+        return self._depth
 
     @property
     def size(self) -> int:
-        return 1 + sum(c.size for c in self.children)
+        return self._size
 
     @property
     def constants(self) -> list[ConstantNode]:
