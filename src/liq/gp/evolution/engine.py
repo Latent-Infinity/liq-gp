@@ -117,6 +117,7 @@ def evolve(
     prev_best: tuple[float, ...] | None = None
 
     for gen in range(config.generations):
+        fingerprints: list[bytes] | None = None
         # --- Determine evaluation context (batch vs full) ---
         batch_size = config.fitness.batch_size
         if batch_size is None or gen % config.fitness.full_eval_interval == 0:
@@ -150,17 +151,18 @@ def evolve(
             config,
             pareto_front_size=pareto_front_size,
         )
-        fingerprints = _compute_semantic_fingerprints(
-            population,
-            ref_context,
-            config.semantic_precision,
-        )
-        stats = replace(
-            stats,
-            unique_semantics_ratio=_compute_unique_semantics_ratio_from_fingerprints(
+        if config.semantic_dedup_enabled:
+            fingerprints = _compute_semantic_fingerprints(
+                population,
+                ref_context,
+                config.semantic_precision,
+            )
+            unique_semantics_ratio = _compute_unique_semantics_ratio_from_fingerprints(
                 fingerprints
-            ),
-        )
+            )
+        else:
+            unique_semantics_ratio = 1.0
+        stats = replace(stats, unique_semantics_ratio=unique_semantics_ratio)
 
         # --- Early stopping ---
         if config.early_stop_patience is not None:
@@ -295,14 +297,15 @@ def evolve(
                 )
 
         # --- Semantic deduplication ---
-        population, _ = deduplicate_population(
-            population,
-            ref_context,
-            registry,
-            config,
-            rng,
-            fingerprints=fingerprints,
-        )
+        if config.semantic_dedup_enabled:
+            population, _ = deduplicate_population(
+                population,
+                ref_context,
+                registry,
+                config,
+                rng,
+                fingerprints=fingerprints,
+            )
 
         # --- Generation reporting ---
         fitness_history.append(stats)
