@@ -53,7 +53,9 @@ def _make_registry() -> PrimitiveRegistry:
         input_types=(Series,),
         output_type=Series,
     )
-    ps = ParamSpec(name="factor", dtype=float, default=1.0, min_value=-10.0, max_value=10.0)
+    ps = ParamSpec(
+        name="factor", dtype=float, default=1.0, min_value=-10.0, max_value=10.0
+    )
     reg.register(
         "scale",
         lambda a, *, factor=1.0: a * factor,
@@ -136,11 +138,25 @@ class TestValidateSeedPrograms:
         with pytest.raises(EvolutionError, match="max_size"):
             validate_seed_programs([tree], config)
 
-    def test_seed_wrong_output_type_raises(self) -> None:
+    def test_seed_wrong_output_type_raises_with_explicit_type(self) -> None:
         config = _make_config()
         seed = ConstantNode(value=1.0, output_type=BoolSeries)
         with pytest.raises(EvolutionError, match="output_type"):
-            validate_seed_programs([seed], config)
+            validate_seed_programs([seed], config, output_type=Series)
+
+    def test_bool_series_seeds_pass_without_explicit_output_type(self) -> None:
+        """BoolSeries seeds should pass when output_type is not specified."""
+        config = _make_config()
+        seed = ConstantNode(value=1.0, output_type=BoolSeries)
+        validate_seed_programs([seed], config)  # Should not raise
+
+    def test_heterogeneous_output_types_rejected(self) -> None:
+        """Seeds with mixed output types should fail validation."""
+        config = _make_config()
+        series_seed = ConstantNode(value=1.0, output_type=Series)
+        bool_seed = ConstantNode(value=1.0, output_type=BoolSeries)
+        with pytest.raises(EvolutionError, match="output_type"):
+            validate_seed_programs([series_seed, bool_seed], config)
 
     def test_seed_unknown_primitive_raises(self) -> None:
         """A seed with a primitive not in the registry should fail."""
@@ -403,9 +419,7 @@ class _MultiObjectiveEvaluator:
             try:
                 output = evaluate(prog, context)
                 mse = float(np.mean((output - target) ** 2))
-                results.append(
-                    FitnessResult(objectives=(-mse, -float(prog.size)))
-                )
+                results.append(FitnessResult(objectives=(-mse, -float(prog.size))))
             except Exception:
                 results.append(FitnessResult(objectives=(-1e10, -100.0)))
         return results
@@ -441,7 +455,9 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config()
         ctx = _make_context()
         seed = _make_simple_tree(reg)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
         assert result.best_program.size > 0
 
@@ -450,7 +466,9 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config()
         ctx = _make_context()
         seeds = [_make_simple_tree(reg), _make_terminal("x"), _make_constant(2.0)]
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds)
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds
+        )
         assert isinstance(result, EvolutionResult)
 
     def test_evolve_with_full_population_seeds(self) -> None:
@@ -458,7 +476,9 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config(population_size=10)
         ctx = _make_context()
         seeds = [_make_simple_tree(reg) for _ in range(10)]
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds)
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds
+        )
         assert isinstance(result, EvolutionResult)
 
     def test_evolve_seeds_none_is_default(self) -> None:
@@ -468,7 +488,9 @@ class TestEvolveWithSeeds:
         ctx = _make_context()
 
         result1 = evolve(reg, config, _SimpleFitnessEvaluator(), ctx)
-        result2 = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=None)
+        result2 = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=None
+        )
 
         # Same seed + same config + no seeds = same result
         assert result1.best_program == result2.best_program
@@ -486,7 +508,10 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config()
         ctx = _make_context()
         result = evolve(
-            reg, config, _SimpleFitnessEvaluator(), ctx,
+            reg,
+            config,
+            _SimpleFitnessEvaluator(),
+            ctx,
             seed_programs=[_make_simple_tree(reg)],
         )
         assert hasattr(result, "best_program")
@@ -500,7 +525,9 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config(generations=10, elitism_count=2)
         ctx = _make_context()
         seed = _make_simple_tree(reg)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         first_fit = result.fitness_history[0].best_fitness[0]
         last_fit = result.fitness_history[-1].best_fitness[0]
         # Elitism preserves best, so last should be >= first
@@ -548,7 +575,11 @@ class TestEvolveWithSeeds:
         ctx = _make_context()
         seed = _make_simple_tree(reg)
         result = evolve(
-            reg, config, _MultiObjectiveEvaluator(), ctx, seed_programs=[seed],
+            reg,
+            config,
+            _MultiObjectiveEvaluator(),
+            ctx,
+            seed_programs=[seed],
         )
         assert isinstance(result, EvolutionResult)
         assert len(result.pareto_front) >= 1
@@ -558,7 +589,9 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config(simplification_enabled=True)
         ctx = _make_context()
         seed = _make_simple_tree(reg)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
 
     def test_evolve_with_seeds_and_constant_opt(self) -> None:
@@ -566,10 +599,14 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config(constant_opt_enabled=True)
         ctx = _make_context()
         seed = _make_simple_tree(reg)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
 
-    def test_constant_optimization_updates_dedup_fingerprints(self, monkeypatch) -> None:
+    def test_constant_optimization_updates_dedup_fingerprints(
+        self, monkeypatch
+    ) -> None:
         reg = _make_registry()
         add_primitive = reg.get("add")
         config = _make_evolve_config(
@@ -599,7 +636,9 @@ class TestEvolveWithSeeds:
         captured: dict[str, int | None] = {}
 
         def _select_all(
-            _population: list[Program], _fitnesses: list[FitnessResult], _config: GPConfig
+            _population: list[Program],
+            _fitnesses: list[FitnessResult],
+            _config: GPConfig,
         ) -> list[int]:
             return list(range(config.population_size))
 
@@ -626,7 +665,9 @@ class TestEvolveWithSeeds:
             dedup_rng: np.random.Generator,
             fingerprints: list[bytes] | None = None,
         ) -> tuple[list[Program], float]:
-            captured["fingerprint_count"] = None if fingerprints is None else len(set(fingerprints))
+            captured["fingerprint_count"] = (
+                None if fingerprints is None else len(set(fingerprints))
+            )
             return original_dedup(
                 population,
                 ref_context,
@@ -669,17 +710,23 @@ class TestEvolveWithSeeds:
         config = _make_evolve_config(semantic_dedup_enabled=True)
         ctx = _make_context()
         seed = _make_simple_tree(reg)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
 
     def test_evolve_with_seeds_and_early_stopping(self) -> None:
         reg = _make_registry()
         config = _make_evolve_config(
-            generations=50, early_stop_patience=3, early_stop_threshold=1e-6,
+            generations=50,
+            early_stop_patience=3,
+            early_stop_threshold=1e-6,
         )
         ctx = _make_context()
         seed = _make_simple_tree(reg)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         # Should stop before 50 generations
         assert len(result.fitness_history) <= 50
 
@@ -690,7 +737,9 @@ class TestEvolveWithSeeds:
         )
         ctx = _make_context()
         seed = _make_simple_tree(reg)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
 
     def test_evolve_with_seeds_callback_works(self) -> None:
@@ -700,7 +749,10 @@ class TestEvolveWithSeeds:
         seed = _make_simple_tree(reg)
         stats_log: list[object] = []
         result = evolve(
-            reg, config, _SimpleFitnessEvaluator(), ctx,
+            reg,
+            config,
+            _SimpleFitnessEvaluator(),
+            ctx,
             seed_programs=[seed],
             callback=lambda s: stats_log.append(s),
         )
@@ -731,7 +783,10 @@ class TestEvolveWarmStart:
         result1 = evolve(reg, config, _SimpleFitnessEvaluator(), ctx)
         config2 = _make_evolve_config(generations=5, seed=99)
         result2 = evolve(
-            reg, config2, _SimpleFitnessEvaluator(), ctx,
+            reg,
+            config2,
+            _SimpleFitnessEvaluator(),
+            ctx,
             seed_programs=[result1.best_program],
         )
         assert isinstance(result2, EvolutionResult)
@@ -746,7 +801,10 @@ class TestEvolveWarmStart:
         seeds = result1.pareto_front
         config2 = _make_evolve_config(generations=5, seed=99)
         result2 = evolve(
-            reg, config2, _SimpleFitnessEvaluator(), ctx,
+            reg,
+            config2,
+            _SimpleFitnessEvaluator(),
+            ctx,
             seed_programs=seeds,
         )
         assert isinstance(result2, EvolutionResult)
@@ -763,7 +821,10 @@ class TestEvolveWarmStart:
 
         config2 = _make_evolve_config(generations=5, seed=99)
         result2 = evolve(
-            reg, config2, _SimpleFitnessEvaluator(), ctx,
+            reg,
+            config2,
+            _SimpleFitnessEvaluator(),
+            ctx,
             seed_programs=[restored],
         )
         assert isinstance(result2, EvolutionResult)
@@ -781,7 +842,10 @@ class TestEvolveWarmStart:
         # Warm start from result1's best for 10 more generations
         config2 = _make_evolve_config(generations=10, seed=99)
         result2 = evolve(
-            reg, config2, _SimpleFitnessEvaluator(), ctx,
+            reg,
+            config2,
+            _SimpleFitnessEvaluator(),
+            ctx,
             seed_programs=[result1.best_program],
         )
         best2_fitness = result2.fitness_history[-1].best_fitness[0]
@@ -804,7 +868,9 @@ class TestSeedEdgeCases:
         config = _make_evolve_config(generations=3)
         ctx = _make_context()
         seed = _make_terminal("x")
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
         assert result.best_program.size > 0
 
@@ -814,7 +880,9 @@ class TestSeedEdgeCases:
         config = _make_evolve_config(generations=3)
         ctx = _make_context()
         seed = _make_constant(3.14)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
         assert result.best_program.size > 0
 
@@ -826,7 +894,9 @@ class TestSeedEdgeCases:
         # Build tree at exactly depth 3
         seed = _make_deep_tree(reg, depth=3)  # neg(neg(neg(x)))
         assert seed.depth == 3
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
 
     def test_minimum_population_size_with_seeds(self) -> None:
@@ -835,7 +905,9 @@ class TestSeedEdgeCases:
         config = _make_evolve_config(population_size=10, generations=3, elitism_count=1)
         ctx = _make_context()
         seeds = [_make_simple_tree(reg), _make_terminal("x")]
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds)
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds
+        )
         assert isinstance(result, EvolutionResult)
 
     def test_all_seeds_identical(self) -> None:
@@ -845,7 +917,9 @@ class TestSeedEdgeCases:
         ctx = _make_context()
         seed = _make_simple_tree(reg)
         seeds = [seed] * 5  # 5 identical add(x, y)
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds)
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=seeds
+        )
         assert isinstance(result, EvolutionResult)
         # Evolution should still produce some diversity
         assert len(result.fitness_history) == 3
@@ -861,6 +935,8 @@ class TestSeedEdgeCases:
             children=(_make_terminal("x"),),
             params={"factor": 2.5},
         )
-        result = evolve(reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed])
+        result = evolve(
+            reg, config, _SimpleFitnessEvaluator(), ctx, seed_programs=[seed]
+        )
         assert isinstance(result, EvolutionResult)
         assert result.best_program.size > 0

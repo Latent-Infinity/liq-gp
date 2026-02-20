@@ -111,7 +111,6 @@ def deduplicate_population(
         A tuple of (new_population, unique_semantics_ratio).
     """
     from liq.gp.evolution.init import generate_grow
-    from liq.gp.types import Series
 
     precision = config.semantic_precision
     pop_size = len(population)
@@ -142,7 +141,9 @@ def deduplicate_population(
             seen.add(fp)
             new_population.append(prog)
         else:
-            replacement = generate_grow(registry, config.max_depth, Series, rng)
+            replacement = generate_grow(
+                registry, config.max_depth, prog.output_type, rng
+            )
             new_population.append(replacement)
 
     return new_population, unique_ratio

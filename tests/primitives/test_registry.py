@@ -246,7 +246,9 @@ class TestQueryMethods:
         assert len(funcs) == 1
         assert funcs[0].name == "gt"
 
-    def test_cache_updates_after_registration(self, populated_registry: PrimitiveRegistry) -> None:
+    def test_cache_updates_after_registration(
+        self, populated_registry: PrimitiveRegistry
+    ) -> None:
         assert len(populated_registry.terminals(output_type=Series)) == 2
         assert len(populated_registry.functions(output_type=Series)) == 2
 

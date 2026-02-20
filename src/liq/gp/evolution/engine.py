@@ -105,6 +105,17 @@ def evolve(
     else:
         population = initialize_population(registry, config)
 
+    # --- Validate seed injection requirements ---
+    if (
+        config.seed_injection is not None
+        and config.seed_injection.method in ("direct", "variation")
+        and seed_programs is None
+    ):
+        raise EvolutionError(
+            f"seed_injection method '{config.seed_injection.method}' "
+            "requires seed_programs to be provided"
+        )
+
     # Reference context for semantic dedup (sampled once at start)
     ref_context = sample_reference_context(
         context,
@@ -115,6 +126,7 @@ def evolve(
     fitness_history: list[GenerationStats] = []
     best_stall_count = 0
     prev_best: tuple[float, ...] | None = None
+    injection_event_counter = 0
 
     for gen in range(config.generations):
         fingerprints: list[bytes] | None = None
@@ -164,7 +176,8 @@ def evolve(
             unique_semantics_ratio = 1.0
         stats = replace(stats, unique_semantics_ratio=unique_semantics_ratio)
 
-        # --- Early stopping ---
+        # --- Early stopping (deferred break) ---
+        should_stop = False
         if config.early_stop_patience is not None:
             if prev_best is not None:
                 improvement = _primary_improvement(
@@ -178,10 +191,7 @@ def evolve(
                     best_stall_count = 0
             prev_best = stats.best_fitness
             if best_stall_count >= config.early_stop_patience:
-                fitness_history.append(stats)
-                if callback is not None:
-                    callback(stats)
-                break
+                should_stop = True
 
         # --- Elitism ---
         elites = get_elites(
@@ -296,6 +306,50 @@ def evolve(
                     config.semantic_precision,
                 )
 
+        # --- Seed injection ---
+        # NOTE: Stats were computed above from the evaluated population.
+        # Injection replaces worst individuals for the *next* generation;
+        # injected_count is patched into stats as additive metadata.
+        injected_count = 0
+        if config.seed_injection is not None:
+            from liq.gp.evolution.injection import inject_seeds
+
+            # Always re-evaluate to ensure fitnesses reflect current population
+            # state (including any constant optimization modifications).
+            fitnesses = _evaluate_population(
+                population,
+                evaluator,
+                context,
+            )
+            # Recompute NSGA-II rankings for the new population
+            inj_ranks: list[int] | None = None
+            inj_crowding: list[float] | None = None
+            if config.selection_mode == "nsga2":
+                _, inj_ranks, inj_crowding = compute_nsga2_rankings(fitnesses, config)
+            population, injected_count = inject_seeds(
+                population,
+                fitnesses,
+                seed_programs,
+                config,
+                registry,
+                rng,
+                gen,
+                ranks=inj_ranks,
+                crowding=inj_crowding,
+                elite_indices=set(range(len(elites))),
+                injection_event=injection_event_counter,
+                output_type=population[0].output_type if population else None,
+            )
+            if injected_count > 0:
+                injection_event_counter += 1
+            # Recompute fingerprints if injection changed the population
+            if injected_count > 0 and config.semantic_dedup_enabled:
+                fingerprints = _compute_semantic_fingerprints(
+                    population,
+                    ref_context,
+                    config.semantic_precision,
+                )
+
         # --- Semantic deduplication ---
         if config.semantic_dedup_enabled:
             population, _ = deduplicate_population(
@@ -308,9 +362,15 @@ def evolve(
             )
 
         # --- Generation reporting ---
+        if injected_count > 0:
+            stats = replace(stats, injected_count=injected_count)
         fitness_history.append(stats)
         if callback is not None:
             callback(stats)
+
+        # --- Deferred early-stop break ---
+        if should_stop:
+            break
 
     # --- Final evaluation for result extraction ---
     fitnesses = _evaluate_population(
@@ -487,7 +547,9 @@ def _compute_semantic_fingerprints(
     ]
 
 
-def _compute_unique_semantics_ratio_from_fingerprints(fingerprints: list[bytes]) -> float:
+def _compute_unique_semantics_ratio_from_fingerprints(
+    fingerprints: list[bytes],
+) -> float:
     """Compute semantic uniqueness ratio from pre-computed fingerprints."""
     if not fingerprints:
         return 1.0

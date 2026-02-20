@@ -169,6 +169,7 @@ class TestContextValidation:
     def test_evolve_rejects_empty_context(self) -> None:
         reg = _minimal_registry()
         config = _minimal_config()
+
         class StubEvaluator:
             def evaluate(
                 self,

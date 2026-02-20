@@ -152,6 +152,15 @@ class FitnessResult:
 class GenerationStats:
     """Per-generation statistics reported to callbacks (FR-5.5.3).
 
+    Fitness and size metrics describe the **evaluated** population at the
+    start of the generation, before seed injection and semantic deduplication.
+    These post-evaluation steps modify the population for the *next*
+    generation but do not retroactively change the statistics.
+
+    The ``injected_count`` field records how many programs were injected
+    *after* statistics were computed — it is additive metadata, not
+    reflected in the fitness or size fields.
+
     Attributes:
         generation: Zero-based generation index.
         best_fitness: Objective values of the best individual.
@@ -162,6 +171,9 @@ class GenerationStats:
             (0.0-1.0); computed via fingerprinting when semantic dedup is on.
         pareto_front_size: Number of individuals on the first Pareto front
             (meaningful in multi-objective mode).
+        injected_count: Number of programs injected this generation via
+            periodic seed injection (0 when injection is disabled or not
+            triggered).
     """
 
     generation: int
@@ -171,6 +183,7 @@ class GenerationStats:
     mean_program_size: float
     unique_semantics_ratio: float
     pareto_front_size: int
+    injected_count: int = 0
 
 
 @dataclass(frozen=True)

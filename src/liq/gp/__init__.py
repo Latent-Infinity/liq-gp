@@ -6,7 +6,7 @@ joint structure and constant optimization, multi-objective Pareto selection,
 semantic diversity management, and algebraic simplification.
 """
 
-from liq.gp.config import FitnessConfig, GPConfig
+from liq.gp.config import FitnessConfig, GPConfig, SeedInjectionConfig
 from liq.gp.errors import (
     ConfigurationError,
     EvaluationError,
@@ -21,6 +21,7 @@ from liq.gp.evolution.init import (
     initialize_seeded_population,
     validate_seed_programs,
 )
+from liq.gp.evolution.injection import inject_seeds
 from liq.gp.primitives.registry import PrimitiveInfo, PrimitiveRegistry
 from liq.gp.program.ast import (
     ConstantNode,
@@ -49,6 +50,7 @@ __all__ = [
     # Configuration
     "GPConfig",
     "FitnessConfig",
+    "SeedInjectionConfig",
     # Types
     "Series",
     "BoolSeries",
@@ -77,6 +79,7 @@ __all__ = [
     "evolve",
     "validate_seed_programs",
     "initialize_seeded_population",
+    "inject_seeds",
     # Protocols
     "FitnessEvaluator",
     # Errors
@@ -89,4 +92,4 @@ __all__ = [
     "ConfigurationError",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

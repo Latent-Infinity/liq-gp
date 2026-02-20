@@ -48,6 +48,39 @@ class FitnessConfig(BaseModel, frozen=True):
         return self
 
 
+class SeedInjectionConfig(BaseModel, frozen=True):
+    """Configuration for periodic seed injection during evolution.
+
+    Controls when and how seed programs are re-injected into the population
+    to maintain diversity or guide search toward known-good structures.
+
+    Attributes:
+        interval: Inject every *interval* generations (must be >= 1).
+        count: Number of programs to inject per cycle (>= 1).
+        method: Injection strategy:
+
+            - ``"direct"`` — inject seed programs as-is (cycles through them).
+            - ``"variation"`` — apply variation operators to seeds to produce
+              offspring (like seeded initialization).
+            - ``"ramped"`` — generate fresh random programs via ramped
+              half-and-half (no seed programs required).
+    Replacement always targets the worst-fitness individuals in the population.
+    In NSGA-II mode, "worst" is determined by Pareto rank and crowding distance.
+    """
+
+    interval: int
+    count: int = 1
+    method: Literal["direct", "variation", "ramped"] = "variation"
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        if self.interval < 1:
+            raise ConfigurationError("seed_injection.interval must be >= 1")
+        if self.count < 1:
+            raise ConfigurationError("seed_injection.count must be >= 1")
+        return self
+
+
 class GPConfig(BaseModel, frozen=True):
     """Main configuration for the GP engine.
 
@@ -102,6 +135,9 @@ class GPConfig(BaseModel, frozen=True):
     # Early stopping
     early_stop_patience: int | None = None
     early_stop_threshold: float = 1e-6
+
+    # Seed injection
+    seed_injection: SeedInjectionConfig | None = None
 
     # Fitness config
     fitness: FitnessConfig = FitnessConfig()
@@ -172,5 +208,14 @@ class GPConfig(BaseModel, frozen=True):
         # Pareto parsimony requires NSGA-II
         if self.parsimony_mode == "pareto" and self.selection_mode != "nsga2":
             raise ConfigurationError("Pareto parsimony requires selection_mode='nsga2'")
+
+        # Seed injection
+        if self.seed_injection is not None:
+            max_replaceable = self.population_size - self.elitism_count
+            if self.seed_injection.count > max_replaceable:
+                raise ConfigurationError(
+                    f"seed_injection.count ({self.seed_injection.count}) must be "
+                    f"<= population_size - elitism_count ({max_replaceable})"
+                )
 
         return self

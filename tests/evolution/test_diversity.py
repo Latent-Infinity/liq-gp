@@ -18,7 +18,7 @@ from liq.gp.program.ast import (
     Program,
     TerminalNode,
 )
-from liq.gp.types import Series
+from liq.gp.types import BoolSeries, Series
 
 # --- helpers ---------------------------------------------------------------
 
@@ -405,4 +405,40 @@ class TestDeduplicatePopulation:
                 config,
                 np.random.default_rng(0),
                 fingerprints=bad_fingerprints,
+            )
+
+    def test_dedup_preserves_output_type_for_bool_series(self) -> None:
+        """Replacement programs must match the population's output_type."""
+        ctx = _make_context()
+        ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
+        # Registry with BoolSeries primitives
+        reg = PrimitiveRegistry()
+        reg.register("close", lambda: None, input_types=(), output_type=Series)
+        reg.register("volume", lambda: None, input_types=(), output_type=Series)
+        reg.register(
+            "gt",
+            lambda a, b: np.where(a > b, 1.0, 0.0),
+            category="comparison",
+            input_types=(Series, Series),
+            output_type=BoolSeries,
+        )
+        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+
+        # Two identical BoolSeries programs (duplicates)
+        gt_info = reg.get("gt")
+        bool_prog = FunctionNode(
+            gt_info,
+            (
+                TerminalNode("close", output_type=Series),
+                TerminalNode("volume", output_type=Series),
+            ),
+        )
+        programs: list[Program] = [bool_prog, bool_prog, bool_prog]
+        rng = np.random.default_rng(42)
+        new_pop, _ = deduplicate_population(programs, ref, reg, config, rng)
+        assert len(new_pop) == 3
+        # First kept; replacements must be BoolSeries, not Series
+        for prog in new_pop:
+            assert prog.output_type == BoolSeries, (
+                f"Expected BoolSeries, got {prog.output_type}"
             )
