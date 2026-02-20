@@ -85,7 +85,8 @@ Each generation follows this pipeline:
 7. **Variation** -- crossover and mutation operators
 8. **Simplification** -- algebraic rewrite rules (optional)
 9. **Constant optimization** -- Nelder-Mead on top-K programs (optional)
-10. **Semantic deduplication** -- remove output-equivalent programs (optional)
+10. **Seed injection** -- replace worst individuals with seed-derived programs (optional)
+11. **Semantic deduplication** -- remove output-equivalent programs (optional)
 
 ### Parallelism
 
@@ -245,6 +246,52 @@ except EvolutionError as e:
 See [`examples/warm_start.py`](examples/warm_start.py) for a complete example with
 cold start, warm start, manual seeding, and serialize/deserialize round-trip.
 
+## Periodic Seed Injection
+
+During evolution, seed injection periodically replaces worst-fitness individuals
+with new programs to maintain diversity and counteract stagnation:
+
+```python
+from liq.gp import GPConfig, SeedInjectionConfig
+
+config = GPConfig(
+    population_size=300,
+    generations=100,
+    seed_injection=SeedInjectionConfig(
+        interval=10,         # inject every 10 generations
+        count=5,             # replace 5 worst individuals per cycle
+        method="variation",  # "direct", "variation", or "ramped"
+    ),
+)
+
+result = evolve(
+    registry=registry,
+    config=config,
+    evaluator=evaluator,
+    context=context,
+    seed_programs=[known_good_program],  # required for "direct" and "variation"
+)
+
+# Track injection events via GenerationStats
+for stats in result.fitness_history:
+    if stats.injected_count > 0:
+        print(f"Gen {stats.generation}: injected {stats.injected_count} programs")
+```
+
+Three injection methods:
+
+| Method | Description | Seeds Required? |
+|--------|-------------|-----------------|
+| `"direct"` | Re-inject seed programs as-is (round-robin cycling) | Yes |
+| `"variation"` | Apply GP operators to seeds to create diverse offspring | Yes |
+| `"ramped"` | Generate fresh random programs (ramped half-and-half) | No |
+
+In NSGA-II mode, "worst" individuals are identified by Pareto rank and crowding
+distance, consistent with the multi-objective selection semantics.
+
+See [`examples/periodic_injection.py`](examples/periodic_injection.py) for a
+complete comparison of all injection methods.
+
 ## Callbacks and Progress Tracking
 
 Pass a callback to `evolve()` to receive `GenerationStats` each generation:
@@ -306,6 +353,7 @@ restored = deserialize(data, registry)     # requires registry for primitive loo
 | `semantic_precision` | 6 | Decimal places for fingerprint rounding |
 | `early_stop_patience` | None | Generations without improvement before stopping |
 | `early_stop_threshold` | 1e-6 | Minimum improvement to reset patience |
+| `seed_injection` | None | Optional `SeedInjectionConfig` for periodic injection |
 
 Operator rates must sum to 1.0. All rates must be non-negative.
 
@@ -327,7 +375,7 @@ All public items are importable from `liq.gp`:
 ```python
 from liq.gp import (
     # Configuration
-    GPConfig, FitnessConfig,
+    GPConfig, FitnessConfig, SeedInjectionConfig,
     # Type system
     Series, BoolSeries, Scalar, Int,
     # Data types
@@ -338,7 +386,7 @@ from liq.gp import (
     Program, TerminalNode, ConstantNode, FunctionNode, ParameterizedNode,
     # Functions
     evaluate, simplify, optimize_constants, serialize, deserialize,
-    evolve, validate_seed_programs, initialize_seeded_population,
+    evolve, validate_seed_programs, initialize_seeded_population, inject_seeds,
     # Protocols
     FitnessEvaluator,
     # Errors
@@ -384,7 +432,7 @@ evaluation via backtesting, strategy adaptation.
 ## Development
 
 ```bash
-uv run pytest                         # run all tests (670+ tests, 97%+ coverage)
+uv run pytest                         # run all tests (730+ tests, 95%+ coverage)
 uv run pytest -m "not slow"           # skip performance tests
 uv run ruff check src/ tests/         # lint
 uv run ruff format src/ tests/        # format

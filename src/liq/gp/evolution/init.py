@@ -226,14 +226,13 @@ def validate_seed_programs(
             the seed index and the specific violation.
     """
     from liq.gp.errors import EvolutionError
-    from liq.gp.types import Series
-
-    if output_type is None:
-        output_type = Series
 
     if len(seeds) == 0:
         msg = "seed_programs must contain at least 1 program"
         raise EvolutionError(msg)
+
+    if output_type is None:
+        output_type = seeds[0].output_type
 
     if len(seeds) > config.population_size:
         msg = (
@@ -342,7 +341,11 @@ def initialize_seeded_population(
             p2 = seeds[(pi + 1) % len(seeds)]
             pi += 2
             child1, child2 = subtree_crossover(
-                p1, p2, registry, config.max_depth, rng,
+                p1,
+                p2,
+                registry,
+                config.max_depth,
+                rng,
                 max_attempts=config.max_crossover_attempts,
             )
             for child in (child1, child2):

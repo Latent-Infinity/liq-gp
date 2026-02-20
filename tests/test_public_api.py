@@ -202,6 +202,7 @@ class TestAllExports:
         # Configuration
         "GPConfig",
         "FitnessConfig",
+        "SeedInjectionConfig",
         # Types
         "Series",
         "BoolSeries",
@@ -229,6 +230,7 @@ class TestAllExports:
         "evolve",
         "validate_seed_programs",
         "initialize_seeded_population",
+        "inject_seeds",
         "FitnessEvaluator",
         # Errors
         "GPError",

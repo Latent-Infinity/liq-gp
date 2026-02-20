@@ -109,7 +109,9 @@ class MultiObjectiveEvaluator:
                 output = evaluate(prog, context)
                 mse = float(np.mean((output - target) ** 2))
                 results.append(
-                    FitnessResult(objectives=(-mse, float(-len(prog.constants) - prog.size)))
+                    FitnessResult(
+                        objectives=(-mse, float(-len(prog.constants) - prog.size))
+                    )
                 )
             except Exception:
                 results.append(FitnessResult(objectives=(-1e10, -1e10)))
