@@ -130,6 +130,16 @@ class TestPublicAPIImports:
 
         assert callable(deserialize)
 
+    def test_serialize_result(self) -> None:
+        from liq.gp import serialize_result
+
+        assert callable(serialize_result)
+
+    def test_deserialize_result(self) -> None:
+        from liq.gp import deserialize_result
+
+        assert callable(deserialize_result)
+
     # -- Evolution --
 
     def test_evolve(self) -> None:
@@ -141,6 +151,11 @@ class TestPublicAPIImports:
         from liq.gp import FitnessEvaluator
 
         assert FitnessEvaluator is not None
+
+    def test_generation_callback(self) -> None:
+        from liq.gp import GenerationCallback
+
+        assert GenerationCallback is not None
 
     def test_validate_seed_programs(self) -> None:
         from liq.gp import validate_seed_programs
@@ -226,12 +241,15 @@ class TestAllExports:
         "optimize_constants",
         "serialize",
         "deserialize",
+        "serialize_result",
+        "deserialize_result",
         # Evolution
         "evolve",
         "validate_seed_programs",
         "initialize_seeded_population",
         "inject_seeds",
         "FitnessEvaluator",
+        "GenerationCallback",
         # Errors
         "GPError",
         "PrimitiveError",

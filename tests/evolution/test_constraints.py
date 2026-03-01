@@ -356,6 +356,94 @@ class TestParsimonyLinear:
         assert result[0].objectives[0] > result[1].objectives[0]
 
 
+class TestParsimonySizeDiversity:
+    """parsimony_mode='size_diversity' rewards rare tree sizes."""
+
+    def test_rarer_size_gets_higher_score(self) -> None:
+        small = _leaf()  # size=1 (rare)
+        medium_a = _depth2_tree()  # size=4
+        medium_b = _depth2_tree()  # size=4
+        pop = [small, medium_a, medium_b]
+        fits = [
+            FitnessResult(objectives=(1.0,)),
+            FitnessResult(objectives=(1.0,)),
+            FitnessResult(objectives=(1.0,)),
+        ]
+        config = _default_config(
+            parsimony_mode="size_diversity",
+        )
+        result = apply_parsimony(fits, pop, config)
+        # small size appears once, medium size appears twice
+        assert result[0].objectives == (1.0, 1.0)
+        assert result[1].objectives == pytest.approx((1.0, 0.5))
+        assert result[2].objectives == pytest.approx((1.0, 0.5))
+        # smaller size class is now favored
+        assert result[0].objectives[1] > result[1].objectives[1]
+
+    def test_uniform_frequency_keeps_objective_balanced(self) -> None:
+        small = _leaf()  # size=1
+        medium = _depth1_tree()  # size=2
+        large = _depth2_tree()  # size=4
+        pop = [small, medium, large]
+        fits = [
+            FitnessResult(objectives=(1.0,)),
+            FitnessResult(objectives=(1.0,)),
+            FitnessResult(objectives=(1.0,)),
+        ]
+        config = _default_config(
+            parsimony_mode="size_diversity",
+        )
+        result = apply_parsimony(fits, pop, config)
+        assert result[0].objectives[1] == pytest.approx(1.0)
+        assert result[1].objectives[1] == pytest.approx(1.0)
+        assert result[2].objectives[1] == pytest.approx(1.0)
+
+    def test_size_diversity_keeps_primary_objective_first(self) -> None:
+        small = _leaf()
+        medium = _depth2_tree()
+        big = _wide_tree(4)  # larger size than medium
+        pop = [small, medium, big]
+        fits = [
+            FitnessResult(objectives=(0.0,)),
+            FitnessResult(objectives=(10.0,)),
+            FitnessResult(objectives=(20.0,)),
+        ]
+        config = _default_config(
+            parsimony_mode="size_diversity",
+        )
+        result = apply_parsimony(fits, pop, config)
+        # Larger primary fitness should remain larger before parsimony reward.
+        assert result[2].objectives[0] > result[1].objectives[0] > result[0].objectives[0]
+
+    def test_size_diversity_is_compatible_with_nsga2(self) -> None:
+        """size_diversity mode appends bonus objective without breaking NSGA-II fitness shape."""
+        small = _leaf()
+        medium = _depth2_tree()
+        big = _wide_tree(4)
+        pop = [small, medium, big]
+        fits = [
+            FitnessResult(objectives=(1.0, 5.0)),
+            FitnessResult(objectives=(2.0, 4.0)),
+            FitnessResult(objectives=(3.0, 3.0)),
+        ]
+        config = _default_config(
+            parsimony_mode="size_diversity",
+            selection_mode="nsga2",
+            fitness={
+                "objectives": ["f1", "f2"],
+                "objective_directions": ["maximize", "minimize"],
+            },
+        )
+        result = apply_parsimony(fits, pop, config)
+        assert len(result) == 3
+        assert all(len(fr.objectives) == 3 for fr in result)
+        assert all(fr.objectives[:2] == fit.objectives for fr, fit in zip(result, fits, strict=True))
+        assert all(
+            fr.metadata["raw_objectives"] == fit.objectives
+            for fr, fit in zip(result, fits, strict=True)
+        )
+
+
 # ---------------------------------------------------------------------------
 # filter_population
 # ---------------------------------------------------------------------------

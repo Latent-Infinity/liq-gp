@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import operator
 
+import numpy as np
 import pytest
 
 from liq.gp.primitives.registry import PrimitiveInfo
@@ -18,7 +19,7 @@ from liq.gp.program.simplify import (
     default_rules,
     simplify,
 )
-from liq.gp.types import ParamSpec, Series
+from liq.gp.types import BoolSeries, ParamSpec, Series
 
 # --- helpers ---------------------------------------------------------------
 
@@ -78,6 +79,39 @@ def _make_neg_info() -> PrimitiveInfo:
     )
 
 
+def _make_if_info() -> PrimitiveInfo:
+    return PrimitiveInfo(
+        name="if",
+        category="logical",
+        arity=3,
+        input_types=(BoolSeries, Series, Series),
+        output_type=Series,
+        callable=lambda cond, a, b: np.where(cond > 0.5, a, b),  # pragma: no cover
+    )
+
+
+def _make_not_info() -> PrimitiveInfo:
+    return PrimitiveInfo(
+        name="not",
+        category="logical",
+        arity=1,
+        input_types=(BoolSeries,),
+        output_type=BoolSeries,
+        callable=lambda x: 1.0 - x,  # pragma: no cover
+    )
+
+
+def _make_abs_info() -> PrimitiveInfo:
+    return PrimitiveInfo(
+        name="abs",
+        category="math",
+        arity=1,
+        input_types=(Series,),
+        output_type=Series,
+        callable=abs,  # pragma: no cover
+    )
+
+
 def _make_highest_info() -> PrimitiveInfo:
     ps = ParamSpec(name="period", dtype=int, default=20, min_value=2, max_value=200)
     return PrimitiveInfo(
@@ -97,6 +131,10 @@ def _close() -> TerminalNode:
 
 def _const(value: float) -> ConstantNode:
     return ConstantNode(value=value)
+
+
+def _const_bool(value: float) -> ConstantNode:
+    return ConstantNode(value=value, output_type=BoolSeries)
 
 
 # --- Identity elimination: x + 0 -> x, 0 + x -> x -------------------------
@@ -234,6 +272,51 @@ class TestDoubleNegation:
         tree = FunctionNode(primitive=neg_info, children=(x,))
         result = simplify(tree)
         assert result == tree
+
+
+class TestAdditionalSimplificationRules:
+    """FR-7.2: additional rewrite rules now required by requirements."""
+
+    def test_if_true_branch(self) -> None:
+        if_info = _make_if_info()
+        condition = _const_bool(1.0)
+        tree = FunctionNode(
+            primitive=if_info,
+            children=(condition, _close(), _close()),
+        )
+        result = simplify(tree)
+        assert result == _close()
+
+    def test_if_false_branch(self) -> None:
+        if_info = _make_if_info()
+        x = _close()
+        tree = FunctionNode(
+            primitive=if_info,
+            children=(_const_bool(0.0), x, _const(7.0)),
+        )
+        result = simplify(tree)
+        assert isinstance(result, ConstantNode)
+        assert result.value == 7.0
+
+    def test_not_not_cancels(self) -> None:
+        not_info = _make_not_info()
+        x = TerminalNode(name="flag", output_type=BoolSeries)
+        inner = FunctionNode(primitive=not_info, children=(x,))
+        outer = FunctionNode(primitive=not_info, children=(inner,))
+        result = simplify(outer)
+        assert result == x
+
+    def test_abs_idempotent(self) -> None:
+        abs_info = _make_abs_info()
+        x = _close()
+        tree = FunctionNode(
+            primitive=abs_info,
+            children=(FunctionNode(primitive=abs_info, children=(x,)),),
+        )
+        result = simplify(tree)
+        assert isinstance(result, FunctionNode)
+        assert result.primitive.name == "abs"
+        assert result.children == (x,)
 
 
 # --- Constant folding -------------------------------------------------------

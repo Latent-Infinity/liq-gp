@@ -1343,8 +1343,7 @@ class TestConstOptFitnessConsistency:
             generations=4,
             elitism_count=2,
             constant_opt_enabled=True,
-            constant_opt_method="scipy",
-            constant_opt_budget=5,
+            constant_opt_max_evals=5,
             seed_injection=SeedInjectionConfig(
                 method="ramped",
                 count=2,

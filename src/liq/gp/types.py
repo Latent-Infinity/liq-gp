@@ -8,8 +8,14 @@ the core data types used throughout the library: :class:`ParamSpec`,
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from numpy.random import Generator
+    from liq.gp.config import GPConfig
+    from liq.gp.program.ast import Program
 
 
 class GPType:
@@ -146,6 +152,25 @@ class FitnessResult:
 
     objectives: tuple[float, ...]
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SelectionContext:
+    """Precomputed selection metadata for extension hooks.
+
+    Contains enough NSGA-II state for hooks that want to avoid recomputing Pareto
+    rankings inside the parent-selection stage.
+    """
+
+    fronts: list[list[int]] | None = None
+    ranks: list[int] | None = None
+    crowding: list[float] | None = None
+
+
+ParentSourceFn = Callable[
+    ["list[Program]", "list[FitnessResult]", "GPConfig", "Generator", int, "SelectionContext"],
+    "list[Program]",
+]
 
 
 @dataclass(frozen=True)

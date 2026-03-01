@@ -110,10 +110,18 @@ class GPConfig(BaseModel, frozen=True):
     # Selection
     tournament_size: int = 5
     elitism_count: int = 5
-    selection_mode: Literal["tournament", "nsga2"] = "tournament"
+    selection_mode: Literal["tournament", "nsga2", "lexicase", "lexicase_eps"] = (
+        "tournament"
+    )
+    lexicase_downsample_policy: Literal["none", "random", "informed"] = "none"
+    lexicase_downsample_cases: int | None = None
+    lexicase_downsample_min_cases: int = 1
+    lexicase_epsilon_strategy: Literal["mad", "percentile", "zero"] = "mad"
+    lexicase_epsilon_percentile: float = 50.0
+    lexicase_nan_penalty: float = 1e6
 
     # Parsimony
-    parsimony_mode: Literal["lexicographic", "pareto", "linear", "disabled"] = (
+    parsimony_mode: Literal["lexicographic", "pareto", "linear", "disabled", "size_diversity"] = (
         "lexicographic"
     )
     parsimony_coefficient: float = 0.001
@@ -121,6 +129,8 @@ class GPConfig(BaseModel, frozen=True):
     # Constant optimization
     constant_opt_enabled: bool = True
     constant_opt_top_k: float = 0.1
+    constant_opt_mode: Literal["top_k", "probabilistic"] = "top_k"
+    constant_opt_max_evals: int | None = None
     constant_opt_max_iter: int = 50
     constant_opt_max_time_seconds: float = 1.0
 
@@ -198,6 +208,10 @@ class GPConfig(BaseModel, frozen=True):
         # Constant opt
         if self.constant_opt_top_k <= 0.0 or self.constant_opt_top_k > 1.0:
             raise ConfigurationError("constant_opt_top_k must be in (0.0, 1.0]")
+        if self.constant_opt_mode not in {"top_k", "probabilistic"}:
+            raise ConfigurationError("constant_opt_mode must be 'top_k' or 'probabilistic'")
+        if self.constant_opt_max_evals is not None and self.constant_opt_max_evals < 1:
+            raise ConfigurationError("constant_opt_max_evals must be >= 1 when set")
         if self.constant_opt_max_time_seconds <= 0:
             raise ConfigurationError("constant_opt_max_time_seconds must be > 0")
 
@@ -208,6 +222,22 @@ class GPConfig(BaseModel, frozen=True):
         # Pareto parsimony requires NSGA-II
         if self.parsimony_mode == "pareto" and self.selection_mode != "nsga2":
             raise ConfigurationError("Pareto parsimony requires selection_mode='nsga2'")
+
+        if self.lexicase_downsample_policy in {"random", "informed"} and (
+            self.lexicase_downsample_cases is not None
+            and self.lexicase_downsample_cases < 1
+        ):
+            raise ConfigurationError(
+                "lexicase_downsample_cases must be >= 1 when set"
+            )
+
+        if self.lexicase_downsample_min_cases < 1:
+            raise ConfigurationError("lexicase_downsample_min_cases must be >= 1")
+
+        if not (0.0 <= self.lexicase_epsilon_percentile <= 100.0):
+            raise ConfigurationError(
+                "lexicase_epsilon_percentile must be in [0.0, 100.0]"
+            )
 
         # Seed injection
         if self.seed_injection is not None:

@@ -7,6 +7,7 @@ deduplication, and statistics tracking.
 
 from __future__ import annotations
 
+from inspect import signature
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Literal, cast
@@ -42,6 +43,8 @@ from liq.gp.types import (
     EvolutionResult,
     FitnessResult,
     GenerationStats,
+    ParentSourceFn,
+    SelectionContext,
 )
 
 
@@ -53,6 +56,7 @@ def evolve(
     *,
     fitness_config: FitnessConfig | None = None,
     callback: Callable[[GenerationStats], None] | None = None,
+    parent_source: ParentSourceFn | None = None,
     seed_programs: Sequence[Program] | None = None,
 ) -> EvolutionResult:
     """Run the full evolution loop (FR-5.5).
@@ -68,6 +72,8 @@ def evolve(
             configured separately from the base ``GPConfig``.
         callback: Optional per-generation callback receiving
             :class:`GenerationStats`.
+        parent_source: Optional hook to source parents each generation.
+            When provided, replaces :func:`select`.
         seed_programs: Optional list of 1 to ``population_size`` programs
             to seed the initial population (FR-5.1.4).  Seeds are placed
             directly; remaining slots are filled by applying variation
@@ -152,6 +158,7 @@ def evolve(
         crowding = None
         if config.selection_mode == "nsga2":
             fronts, ranks, crowding = compute_nsga2_rankings(fitnesses, config)
+        selection_context = SelectionContext(fronts=fronts, ranks=ranks, crowding=crowding)
 
         # --- Compute generation statistics ---
         pareto_front_size = len(fronts[0]) if fronts else None
@@ -202,19 +209,32 @@ def evolve(
         )
 
         # --- Selection ---
-        parents = select(
-            population,
-            fitnesses,
-            config,
-            rng,
-            fronts=fronts,
-            ranks=ranks,
-            crowding=crowding,
-        )
+        target_size = config.population_size - len(elites)
+        if parent_source is None:
+            parents = select(
+                population,
+                fitnesses,
+                config,
+                rng,
+                fronts=fronts,
+                ranks=ranks,
+                crowding=crowding,
+            )
+        else:
+            parents = parent_source(
+                population,
+                fitnesses,
+                config,
+                rng,
+                target_size,
+                selection_context,
+            )
+            if len(parents) != target_size:
+                msg = "parent_source must return exactly target_size parents"
+                raise ValueError(msg)
 
         # --- Variation (crossover + mutation) ---
         offspring: list[Program] = []
-        target_size = config.population_size - len(elites)
         pi = 0  # parent index
 
         while len(offspring) < target_size:
@@ -281,6 +301,7 @@ def evolve(
                 optimize_constants,
                 select_for_optimization,
             )
+            constant_opt_budget = config.constant_opt_max_evals
 
             # Re-evaluate after combination
             fitnesses = _evaluate_population(
@@ -288,7 +309,32 @@ def evolve(
                 evaluator,
                 context,
             )
-            indices = select_for_optimization(population, fitnesses, config)
+            select_for_optimization_sig = signature(select_for_optimization)
+            if "max_evals" in select_for_optimization_sig.parameters:
+                if "rng" in select_for_optimization_sig.parameters:
+                    indices = select_for_optimization(
+                        population,
+                        fitnesses,
+                        config,
+                        rng,
+                        max_evals=constant_opt_budget,
+                    )
+                else:
+                    indices = select_for_optimization(
+                        population,
+                        fitnesses,
+                        config,
+                        max_evals=constant_opt_budget,
+                    )
+            elif "rng" in select_for_optimization_sig.parameters:
+                indices = select_for_optimization(
+                    population,
+                    fitnesses,
+                    config,
+                    rng,
+                )
+            else:
+                indices = select_for_optimization(population, fitnesses, config)
             for idx in indices:
                 population[idx] = optimize_constants(
                     population[idx],

@@ -1,12 +1,15 @@
 """Selection operators for GP evolution (FR-5.3).
 
-Provides: tournament selection, NSGA-II selection (non-dominated sorting +
-crowding distance), elitism, and a unified dispatcher.
+Provides tournament, NSGA-II, and (ε-)lexicase selection, plus elitism and
+the shared selection dispatcher.
 """
 
 from __future__ import annotations
 
 import math
+import statistics
+import numbers
+from collections import defaultdict
 from functools import cmp_to_key
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -55,6 +58,299 @@ def _compare_objectives_lexicographic(
             return 1 if av > bv else -1
         return 1 if av < bv else -1
     return 0
+
+
+def _safe_float(value: object, *, penalty: float) -> float:
+    """Convert metadata values to finite float scores."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return penalty
+    value_float = float(value)
+    if not math.isfinite(value_float):
+        return penalty
+    return value_float
+
+
+def _extract_slice_scores(
+    fitness: FitnessResult,
+    nan_penalty: float,
+) -> dict[str, float]:
+    """Extract per-slice scores from metadata.
+
+    Non-dict metadata or invalid per-slice values are converted to
+    ``nan_penalty`` so lexicase treats them as very poor outcomes.
+    """
+    raw = fitness.metadata.get("slice_scores")
+    if not isinstance(raw, dict):
+        return {}
+
+    scores: dict[str, float] = {}
+    for case_id, value in raw.items():
+        if not isinstance(case_id, str):
+            continue
+        scores[case_id] = _safe_float(value, penalty=nan_penalty)
+    return scores
+
+
+def _extract_raw_objectives(fitness: FitnessResult) -> tuple[float, ...] | None:
+    """Extract raw objectives metadata when present."""
+    raw = fitness.metadata.get("raw_objectives")
+    if raw is None:
+        return None
+    if not isinstance(raw, tuple):
+        msg = (
+            "metadata['raw_objectives'] must be a tuple when provided "
+            f"(got {type(raw).__name__})"
+        )
+        raise ValueError(msg)
+    return raw
+
+
+def _extract_slice_weights(
+    fitness: FitnessResult,
+) -> dict[str, float]:
+    """Extract optional per-slice weights from metadata."""
+    raw = fitness.metadata.get("slice_weights")
+    if not isinstance(raw, dict):
+        return {}
+
+    weights: dict[str, float] = {}
+    for case_id, value in raw.items():
+        if not isinstance(case_id, str):
+            continue
+        if not isinstance(value, numbers.Real) or isinstance(value, bool):
+            continue
+        value_float = float(value)
+        if not math.isfinite(value_float):
+            continue
+        weights[case_id] = max(0.0, value_float)
+    return weights
+
+
+def _collect_case_weights(
+    case_ids: list[str],
+    fitnesses: list[FitnessResult],
+) -> dict[str, float]:
+    """Aggregate per-slice weights across the population."""
+    total_weights = defaultdict(float)
+    counts = defaultdict(int)
+
+    case_set = set(case_ids)
+    for fitness in fitnesses:
+        weight_map = _extract_slice_weights(fitness)
+        for case_id, value in weight_map.items():
+            if case_id not in case_set:
+                continue
+            total_weights[case_id] += value
+            counts[case_id] += 1
+
+    weights: dict[str, float] = {}
+    for case_id in case_ids:
+        if counts[case_id] > 0:
+            weights[case_id] = total_weights[case_id] / counts[case_id]
+    return weights
+
+
+def _align_slice_scores(
+    fitnesses: list[FitnessResult],
+    nan_penalty: float,
+) -> tuple[list[str], list[list[float]]]:
+    """Align all per-individual slice scores to the union key set."""
+    score_maps: list[dict[str, float]] = []
+    case_ids: set[str] = set()
+
+    for fitness in fitnesses:
+        score_map = _extract_slice_scores(fitness, nan_penalty=nan_penalty)
+        score_maps.append(score_map)
+        case_ids.update(score_map.keys())
+
+    if not case_ids:
+        return [], []
+
+    ordered_case_ids = sorted(case_ids)
+    case_index = {case_id: pos for pos, case_id in enumerate(ordered_case_ids)}
+    aligned: list[list[float]] = []
+    for score_map in score_maps:
+        row = [nan_penalty] * len(ordered_case_ids)
+        for case_id, score in score_map.items():
+            row[case_index[case_id]] = score
+        aligned.append(row)
+    return ordered_case_ids, aligned
+
+
+def _case_epsilon(values: list[float], strategy: Literal["mad", "percentile", "zero"], q: float) -> float:
+    """Compute epsilon for one case column."""
+    if not values:
+        return 0.0
+    if strategy == "zero":
+        return 0.0
+    if strategy == "mad":
+        center = statistics.median(values)
+        return statistics.median(abs(value - center) for value in values)
+
+    q = min(max(q, 0.0), 100.0)
+    if q == 0.0:
+        return min(values)
+    if q == 100.0:
+        return max(values)
+
+    sorted_values = sorted(values)
+    rank = (len(sorted_values) - 1) * (q / 100.0)
+    lower = int(math.floor(rank))
+    upper = int(math.ceil(rank))
+    if lower == upper:
+        return sorted_values[lower]
+    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * (
+        rank - lower
+    )
+
+
+def _downsample_cases(
+    cases: list[str],
+    config: GPConfig,
+    rng: Generator,
+    case_weights: dict[str, float] | None = None,
+) -> list[str]:
+    """Return policy-specific subset of cases for one selection event."""
+    if config.lexicase_downsample_policy == "none" or not cases:
+        return cases
+
+    shuffled = cases.copy()
+    rng.shuffle(shuffled)
+    if config.lexicase_downsample_cases is None:
+        return shuffled
+
+    target = min(
+        len(shuffled),
+        max(config.lexicase_downsample_min_cases, config.lexicase_downsample_cases),
+    )
+    if target <= 0:
+        return []
+    if target >= len(shuffled):
+        return shuffled
+    if config.lexicase_downsample_policy == "random":
+        return shuffled[:target]
+    if config.lexicase_downsample_policy == "informed":
+        if not case_weights:
+            return shuffled[:target]
+        return sorted(
+            shuffled,
+            key=lambda case_id: (-case_weights.get(case_id, 0.0), case_id),
+        )[:target]
+
+    return shuffled[:target]
+
+
+def _prepare_lexicase_case_scores(
+    fitnesses: list[FitnessResult],
+    config: GPConfig,
+) -> tuple[list[str], list[float], list[list[float]]]:
+    """Prepare case IDs, per-case epsilons, and per-individual aligned rows."""
+    for fitness in fitnesses:
+        raw_objectives = _extract_raw_objectives(fitness)
+        if raw_objectives is None:
+            continue
+
+        raw_len = len(raw_objectives)
+        score_map = _extract_slice_scores(fitness, nan_penalty=config.lexicase_nan_penalty)
+        if score_map and len(score_map) != raw_len:
+            msg = (
+                "metadata['slice_scores'] and metadata['raw_objectives'] "
+                "dimensions are incompatible"
+            )
+            raise ValueError(msg)
+
+    case_ids, aligned_rows = _align_slice_scores(
+        fitnesses=fitnesses,
+        nan_penalty=config.lexicase_nan_penalty,
+    )
+    if not case_ids:
+        msg = (
+            "selection_mode='lexicase' requires metadata['slice_scores'] with at "
+            "least one case key on at least one individual"
+        )
+        raise ValueError(msg)
+
+    strategy = (
+        "zero"
+        if config.selection_mode == "lexicase"
+        else config.lexicase_epsilon_strategy
+    )
+    epsilons = [
+        _case_epsilon(
+            [row[index] for row in aligned_rows],
+            strategy=strategy,
+            q=config.lexicase_epsilon_percentile,
+        )
+        for index in range(len(case_ids))
+    ]
+    return case_ids, epsilons, aligned_rows
+
+
+def _select_with_lexicase(
+    aligned_rows: list[list[float]],
+    case_ids: list[str],
+    epsilons: list[float],
+    config: GPConfig,
+    case_weights: dict[str, float],
+    rng: Generator,
+) -> int:
+    """Return one winner index by lexicase using prepared case rows."""
+    candidate_indices = list(range(len(aligned_rows)))
+    if not candidate_indices:
+        raise ValueError("Cannot perform lexicase selection on empty population")
+
+    cases = case_ids.copy()
+    rng.shuffle(cases)
+    cases = _downsample_cases(
+        cases=cases,
+        config=config,
+        rng=rng,
+        case_weights=case_weights,
+    )
+    case_position = {case_id: index for index, case_id in enumerate(case_ids)}
+    for case in cases:
+        column = case_position[case]
+        selected_column = [aligned_rows[index][column] for index in candidate_indices]
+        best = min(selected_column)
+        threshold = best + epsilons[column]
+        candidate_indices = [
+            index
+            for index in candidate_indices
+            if aligned_rows[index][column] <= threshold
+        ]
+        if len(candidate_indices) == 1:
+            return candidate_indices[0]
+
+    return int(rng.choice(candidate_indices))
+
+
+def lexicase_select(
+    population: list[Program],
+    fitnesses: list[FitnessResult],
+    config: GPConfig,
+    rng: Generator,
+) -> list[Program]:
+    """Select parents with lexicase or ε-lexicase."""
+    n_select = config.population_size - config.elitism_count
+    case_ids, epsilons, aligned_rows = _prepare_lexicase_case_scores(
+        fitnesses=fitnesses,
+        config=config,
+    )
+    case_weights = _collect_case_weights(case_ids=case_ids, fitnesses=fitnesses)
+
+    selected: list[Program] = []
+    for _ in range(n_select):
+        winner = _select_with_lexicase(
+            aligned_rows=aligned_rows,
+            case_ids=case_ids,
+            epsilons=epsilons,
+            config=config,
+            case_weights=case_weights,
+            rng=rng,
+        )
+        selected.append(population[winner])
+
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +688,7 @@ def get_elites(
     if config.elitism_count == 0:
         return []
 
-    if config.selection_mode == "tournament":
+    if config.selection_mode in {"tournament", "lexicase", "lexicase_eps"}:
         return _tournament_elites(population, fitnesses, config)
     return _nsga2_elites(
         population,
@@ -510,6 +806,13 @@ def select(
             fronts=fronts,
             ranks=ranks,
             crowding=crowding,
+        )
+    if config.selection_mode in {"lexicase", "lexicase_eps"}:
+        return lexicase_select(
+            population=population,
+            fitnesses=fitnesses,
+            config=config,
+            rng=rng,
         )
     else:
         msg = f"Unknown selection mode: {config.selection_mode!r}"

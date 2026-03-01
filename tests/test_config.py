@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from liq.gp.config import FitnessConfig, GPConfig, SeedInjectionConfig
 from liq.gp.errors import ConfigurationError
@@ -31,6 +32,8 @@ class TestGPConfigDefaults:
         assert cfg.parsimony_coefficient == 0.001
         assert cfg.constant_opt_enabled is True
         assert cfg.constant_opt_top_k == 0.1
+        assert cfg.constant_opt_mode == "top_k"
+        assert cfg.constant_opt_max_evals is None
         assert cfg.constant_opt_max_iter == 50
         assert cfg.constant_opt_max_time_seconds == 1.0
         assert cfg.simplification_enabled is True
@@ -39,6 +42,12 @@ class TestGPConfigDefaults:
         assert cfg.semantic_precision == 6
         assert cfg.early_stop_patience is None
         assert cfg.early_stop_threshold == 1e-6
+        assert cfg.lexicase_downsample_policy == "none"
+        assert cfg.lexicase_downsample_cases is None
+        assert cfg.lexicase_downsample_min_cases == 1
+        assert cfg.lexicase_epsilon_strategy == "mad"
+        assert cfg.lexicase_epsilon_percentile == 50.0
+        assert cfg.lexicase_nan_penalty == 1e6
 
     def test_frozen(self) -> None:
         cfg = GPConfig()
@@ -106,6 +115,10 @@ class TestGPConfigValidation:
         with pytest.raises(ConfigurationError, match="tournament_size"):
             GPConfig(population_size=10, tournament_size=20)
 
+    def test_invalid_selection_mode_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            GPConfig(selection_mode="not-a-mode")
+
     def test_max_crossover_attempts_must_be_positive(self) -> None:
         with pytest.raises(ConfigurationError, match="max_crossover_attempts"):
             GPConfig(max_crossover_attempts=0)
@@ -134,6 +147,18 @@ class TestGPConfigValidation:
         with pytest.raises(ConfigurationError, match="constant_opt_max_time"):
             GPConfig(constant_opt_max_time_seconds=0.0)
 
+    def test_constant_opt_mode_invalid(self) -> None:
+        with pytest.raises(ValidationError, match="constant_opt_mode"):
+            GPConfig(constant_opt_mode="invalid")
+
+    def test_constant_opt_max_evals_must_be_positive(self) -> None:
+        with pytest.raises(ConfigurationError, match="constant_opt_max_evals"):
+            GPConfig(constant_opt_max_evals=0)
+
+    def test_constant_opt_max_evals_valid(self) -> None:
+        cfg = GPConfig(constant_opt_max_evals=5)
+        assert cfg.constant_opt_max_evals == 5
+
     def test_nsga2_requires_two_objectives(self) -> None:
         with pytest.raises(ConfigurationError, match="NSGA-II"):
             GPConfig(
@@ -160,6 +185,57 @@ class TestGPConfigValidation:
                 parsimony_mode="pareto",
                 selection_mode="tournament",
             )
+
+    def test_size_diversity_parsimony_mode_accepted(self) -> None:
+        cfg = GPConfig(parsimony_mode="size_diversity")
+        assert cfg.parsimony_mode == "size_diversity"
+
+    def test_selection_mode_lexicase(self) -> None:
+        cfg = GPConfig(
+            selection_mode="lexicase",
+            lexicase_downsample_policy="none",
+        )
+        assert cfg.selection_mode == "lexicase"
+
+    def test_selection_mode_lexicase_informed(self) -> None:
+        cfg = GPConfig(
+            selection_mode="lexicase",
+            lexicase_downsample_policy="informed",
+            lexicase_downsample_cases=2,
+        )
+        assert cfg.lexicase_downsample_policy == "informed"
+
+    def test_selection_mode_lexicase_eps(self) -> None:
+        cfg = GPConfig(
+            selection_mode="lexicase_eps",
+            lexicase_epsilon_strategy="percentile",
+            lexicase_epsilon_percentile=25.0,
+        )
+        assert cfg.selection_mode == "lexicase_eps"
+
+    def test_lexicase_invalid_downsample_cases(self) -> None:
+        with pytest.raises(ConfigurationError, match="lexicase_downsample_cases"):
+            GPConfig(
+                lexicase_downsample_policy="random",
+                lexicase_downsample_cases=0,
+            )
+        with pytest.raises(ConfigurationError, match="lexicase_downsample_cases"):
+            GPConfig(
+                lexicase_downsample_policy="informed",
+                lexicase_downsample_cases=0,
+            )
+
+    def test_lexicase_invalid_epsilon_percentile(self) -> None:
+        with pytest.raises(ConfigurationError, match="lexicase_epsilon_percentile"):
+            GPConfig(lexicase_epsilon_percentile=-1.0)
+
+    def test_lexicase_invalid_epsilon_percentile_upper_bound(self) -> None:
+        with pytest.raises(ConfigurationError, match="lexicase_epsilon_percentile"):
+            GPConfig(lexicase_epsilon_percentile=101.0)
+
+    def test_lexicase_invalid_min_cases(self) -> None:
+        with pytest.raises(ConfigurationError, match="lexicase_downsample_min_cases"):
+            GPConfig(lexicase_downsample_min_cases=0)
 
     def test_max_size_zero_rejected(self) -> None:
         with pytest.raises(ConfigurationError, match="max_size"):

@@ -1,14 +1,15 @@
 """Constant optimization for GP programs (FR-6).
 
 Extracts ConstantNode values from a program tree, optimizes them via
-scipy.optimize.minimize (Nelder-Mead), and writes optimized values back
-into a new AST (immutability preserved).
+scipy.optimize.minimize, and writes optimized values back into a new
+AST (immutability preserved).
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -125,24 +126,33 @@ def select_for_optimization(
     population: list[Program],
     fitnesses: list[FitnessResult],
     config: GPConfig,
+    rng: np.random.Generator | None = None,
+    max_evals: int | None = None,
 ) -> list[int]:
-    """Return sorted indices of the top-K programs eligible for constant optimization.
+    """Return sorted indices of programs eligible for constant optimization.
 
-    Programs with zero constants are excluded. The top-K fraction
-    (``config.constant_opt_top_k``) of the remaining programs is
-    selected, with at least 1 selected if any eligible programs exist.
-
-    Selection is based on the first objective (primary fitness), with
-    higher values considered better.
+    Programs with zero constants are excluded.
 
     Args:
         population: The full population of programs.
         fitnesses: Corresponding fitness results.
-        config: GP configuration (provides ``constant_opt_top_k``).
+        config: GP configuration.
+        rng: Optional RNG for stochastic modes. A new generator is created
+            when omitted.
+        max_evals: Optional hard cap on how many candidates can be selected.
 
     Returns:
         Sorted list of indices into ``population``.
     """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    if max_evals is None:
+        max_evals = config.constant_opt_max_evals
+
+    if max_evals is not None and max_evals <= 0:
+        return []
+
     # Filter to programs that have at least one constant
     eligible: list[tuple[int, float]] = []
     for i, (prog, fit) in enumerate(zip(population, fitnesses, strict=True)):
@@ -155,9 +165,40 @@ def select_for_optimization(
     maximize = config.fitness.objective_directions[0] == "maximize"
     eligible.sort(key=lambda x: x[1], reverse=maximize)
 
-    # Select top-K fraction, at least 1
-    k = max(1, int(len(eligible) * config.constant_opt_top_k))
-    selected_indices = [idx for idx, _fit in eligible[:k]]
+    if config.constant_opt_mode == "top_k":
+        # Select top-K fraction, at least 1.
+        k = max(1, int(len(eligible) * config.constant_opt_top_k))
+        if max_evals is not None:
+            k = min(k, max_evals)
+        selected_indices = [idx for idx, _fit in eligible[:k]]
+    else:
+        # Rank-proportional sampling (probabilistic mode).
+        # Best individuals receive higher selection probability.
+        n_eligible = len(eligible)
+        if n_eligible == 0:
+            return []
+        budget = (
+            max_evals
+            if max_evals is not None
+            else max(1, math.ceil(n_eligible * config.constant_opt_top_k))
+        )
+        budget = min(budget, n_eligible)
+        if budget <= 0:
+            return []
+
+        # Linearly decreasing rank weights: best gets weight n_eligible, next n_eligible-1, etc.
+        ranks = n_eligible - np.arange(n_eligible, dtype=float)
+        probabilities = ranks / np.sum(ranks)
+
+        sampled = rng.choice(
+            n_eligible,
+            size=budget,
+            replace=False,
+            p=probabilities,
+        )
+        selected_indices: list[int] = []
+        for sampled_position in sampled:
+            selected_indices.append(eligible[int(sampled_position)][0])
 
     # Return sorted ascending
     selected_indices.sort()
@@ -211,7 +252,7 @@ def _run_optimization(
     rng: np.random.Generator,
     initial_constants: list[float],
 ) -> Program:
-    """Execute scipy Nelder-Mead optimization with time + iter limits."""
+    """Run scipy optimization with deterministic time/iteration limits."""
     x0 = np.array(initial_constants, dtype=np.float64)
 
     # Add small deterministic perturbation to break symmetry
@@ -256,27 +297,86 @@ def _run_optimization(
 
         return loss
 
+    # FR-6.2 suggests L-BFGS-B with Nelder-Mead fallback.
+    # We attempt L-BFGS-B first for faster convergence on smooth objectives,
+    # then fall back to Nelder-Mead if L-BFGS-B fails.
     try:
-        result = minimize(
+        optimized_x = _minimize_constants(
             objective,
             x0,
-            method="Nelder-Mead",
-            callback=time_callback,
-            options={
-                "maxiter": config.constant_opt_max_iter,
-                "xatol": 1e-8,
-                "fatol": 1e-8,
-                "adaptive": True,
-            },
+            time_callback,
+            max_iter=config.constant_opt_max_iter,
+            method="L-BFGS-B",
+            bounds=[(None, None)] * len(x0),
+            best_x=best_x,
         )
-
-        # Use the best constants found (either from result or tracked best)
-        if result.success or np.isfinite(result.fun):
-            optimized_x = result.x.tolist()
-        else:
-            optimized_x = best_x[0].tolist()
     except _TimeLimitReached:
-        # Time limit was hit inside objective; use best found so far
+        optimized_x = best_x[0].tolist()
+    except Exception:
+        try:
+            optimized_x = _minimize_constants(
+                objective,
+                x0,
+                time_callback,
+                max_iter=config.constant_opt_max_iter,
+                method="Nelder-Mead",
+                bounds=None,
+                best_x=best_x,
+            )
+        except _TimeLimitReached:
+            optimized_x = best_x[0].tolist()
+
+    # Use the best constants found (either optimizer output or tracked best)
+    if optimized_x is None:
         optimized_x = best_x[0].tolist()
 
     return inject_constants(program, optimized_x)
+
+
+def _minimize_constants(
+    objective: Any,
+    x0: np.ndarray,
+    time_callback: Any,
+    *,
+    max_iter: int,
+    method: str,
+    bounds: list[tuple[float | None, float | None]] | None,
+    best_x: list[np.ndarray],
+) -> list[float]:
+    """Run one scipy optimization pass and return candidate constants.
+
+    Returns the best constants seen during the pass, or raises on failure.
+    """
+    minimize_kwargs = {
+        "method": method,
+        "options": {
+            "maxiter": max_iter,
+        },
+    }
+
+    if method == "L-BFGS-B":
+        minimize_kwargs["options"]["ftol"] = 1e-8
+    elif method == "Nelder-Mead":
+        minimize_kwargs["options"].update(
+            {
+                "xatol": 1e-8,
+                "fatol": 1e-8,
+                "adaptive": True,
+            }
+        )
+
+    if method == "L-BFGS-B" and bounds is not None:
+        minimize_kwargs["bounds"] = bounds
+
+    result = minimize(
+        objective,
+        x0,
+        callback=time_callback,
+        **minimize_kwargs,
+    )
+
+    # Return tracked best when optimizer does not report success.
+    if result.success or np.isfinite(result.fun):
+        return result.x.tolist()
+
+    return best_x[0].tolist()

@@ -438,6 +438,103 @@ class TestSelectForOptimization:
         # Should be the top 10 indices (90..99)
         assert set(indices) == set(range(90, 100))
 
+    def test_probabilistic_mode_uses_rng_seed(self) -> None:
+        """Probabilistic mode selection changes with RNG seeds."""
+        population = [_make_linear_program() for _ in range(100)]
+        # Higher score is better
+        fitnesses = [FitnessResult(objectives=(float(i),)) for i in range(100)]
+        config = GPConfig(constant_opt_top_k=0.5, constant_opt_mode="probabilistic")
+
+        indices_a = select_for_optimization(
+            population,
+            fitnesses,
+            config,
+            np.random.default_rng(1),
+        )
+        indices_b = select_for_optimization(
+            population,
+            fitnesses,
+            config,
+            np.random.default_rng(1),
+        )
+        indices_c = select_for_optimization(
+            population,
+            fitnesses,
+            config,
+            np.random.default_rng(2),
+        )
+
+        assert indices_a == indices_b
+        assert indices_a != indices_c
+
+    def test_probabilistic_mode_prefers_better_rank(self) -> None:
+        """Higher-ranked solutions are selected more often than lower-ranked ones."""
+        population = [_make_linear_program() for _ in range(20)]
+        fitnesses = [FitnessResult(objectives=(float(i),)) for i in range(20)]
+        config = GPConfig(
+            constant_opt_top_k=1.0,
+            constant_opt_mode="probabilistic",
+        )
+
+        hits: dict[int, int] = {idx: 0 for idx in range(len(population))}
+        for seed in range(400):
+            indices = select_for_optimization(
+                population,
+                fitnesses,
+                config,
+                np.random.default_rng(seed),
+                max_evals=1,
+            )
+            assert len(indices) == 1
+            hits[indices[0]] += 1
+
+        # With rank-proportional weights, top individual should dominate tails.
+        assert hits[19] > hits[10]
+        assert hits[10] > hits[0]
+
+    def test_probabilistic_mode_respects_max_eval_budget(self) -> None:
+        """Budget cap is honored in probabilistic mode."""
+        population = [_make_linear_program() for _ in range(100)]
+        fitnesses = [FitnessResult(objectives=(float(i),)) for i in range(100)]
+        config = GPConfig(
+            constant_opt_mode="probabilistic",
+            constant_opt_top_k=1.0,
+            constant_opt_max_evals=5,
+        )
+
+        indices = select_for_optimization(
+            population,
+            fitnesses,
+            config,
+            np.random.default_rng(1),
+            max_evals=5,
+        )
+        assert len(indices) <= 5
+
+    def test_top_k_mode_default_is_unchanged(self) -> None:
+        """Default behavior remains top-k when mode is explicitly top_k."""
+        population = [_make_linear_program() for _ in range(100)]
+        fitnesses = [FitnessResult(objectives=(float(i),)) for i in range(100)]
+        default_mode = GPConfig(constant_opt_top_k=0.1)
+        explicit_mode = GPConfig(
+            constant_opt_top_k=0.1,
+            constant_opt_mode="top_k",
+        )
+
+        indices_default = select_for_optimization(
+            population,
+            fitnesses,
+            default_mode,
+            np.random.default_rng(7),
+        )
+        indices_explicit = select_for_optimization(
+            population,
+            fitnesses,
+            explicit_mode,
+            np.random.default_rng(7),
+        )
+        assert indices_default == indices_explicit
+
     def test_all_selected_when_top_k_is_one(self) -> None:
         """top_k=1.0 should select all."""
         population = [_make_linear_program() for _ in range(20)]

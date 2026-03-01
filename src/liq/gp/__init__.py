@@ -32,9 +32,14 @@ from liq.gp.program.ast import (
 )
 from liq.gp.program.constants import optimize_constants
 from liq.gp.program.eval import evaluate
-from liq.gp.program.serialize import deserialize, serialize
+from liq.gp.program.serialize import (
+    deserialize,
+    deserialize_result,
+    serialize,
+    serialize_result,
+)
 from liq.gp.program.simplify import simplify
-from liq.gp.protocols import FitnessEvaluator
+from liq.gp.protocols import FitnessEvaluator, GenerationCallback
 from liq.gp.types import (
     BoolSeries,
     EvolutionResult,
@@ -75,6 +80,8 @@ __all__ = [
     "optimize_constants",
     "serialize",
     "deserialize",
+    "serialize_result",
+    "deserialize_result",
     # Evolution
     "evolve",
     "validate_seed_programs",
@@ -82,6 +89,7 @@ __all__ = [
     "inject_seeds",
     # Protocols
     "FitnessEvaluator",
+    "GenerationCallback",
     # Errors
     "GPError",
     "PrimitiveError",

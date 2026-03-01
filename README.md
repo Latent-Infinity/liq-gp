@@ -439,6 +439,19 @@ uv run ruff format src/ tests/        # format
 uv run ty check src/                  # type check
 ```
 
+## Operational Failure Mapping (Phase 6 hardening)
+
+- `selection_mode="lexicase"` without valid per-individual
+  `METADATA_KEY_SLICE_SCORES` fails fast with `ValueError`.
+- `metadata["raw_objectives"]` shape and `slice_scores` size are validated in the
+  selector before tournament-like selection is attempted.
+- `parsimony_mode="disabled"` is required for some external evaluators that emit
+  intentionally shaped `raw_objectives` used by lexicase key alignment.
+- `QDArchive.sample` with `coverage_weight=0` selects by best first objective;
+  with `coverage_weight=1` it prioritizes underfilled bins.
+- Invalid `coverage_weight`, selection mode, or archive shape violations are
+  surfaced at configuration/evolution boundaries before mutation begins.
+
 ## License
 
 MIT
