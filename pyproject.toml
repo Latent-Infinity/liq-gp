@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "liq-gp"
-version = "0.1.1"
+version = "0.1.2"
 description = "General-purpose genetic programming engine for the LIQ Stack"
 readme = "README.md"
 license = "MIT"

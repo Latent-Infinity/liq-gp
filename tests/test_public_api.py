@@ -271,6 +271,7 @@ class TestAllExports:
         for name in liq.gp.__all__:
             assert hasattr(liq.gp, name), f"{name} in __all__ but not importable"
 
-    def test_version_defined(self) -> None:
-        assert hasattr(liq.gp, "__version__")
-        assert isinstance(liq.gp.__version__, str)
+    def test_version_from_metadata(self) -> None:
+        from importlib.metadata import version
+
+        assert isinstance(version("liq-gp"), str)
