@@ -178,6 +178,57 @@ class TestComputeFingerprint:
         # remains 1.0000001000, so the bytes representation differs.
         assert fp_high != fp_low
 
+    def test_fingerprint_handles_evaluation_errors(self) -> None:
+        """Fingerprinting should not crash when program evaluation fails."""
+        ref = _make_context(10)
+
+        def _raise_value_error(_a: np.ndarray) -> np.ndarray:
+            raise ValueError("invalid parameter combination")
+
+        bad_primitive = PrimitiveInfo(
+            name="boom",
+            category="numeric",
+            arity=1,
+            input_types=(Series,),
+            output_type=Series,
+            callable=_raise_value_error,
+        )
+        bad_program = FunctionNode(
+            primitive=bad_primitive,
+            children=(TerminalNode(name="close", output_type=Series),),
+        )
+        fp1 = compute_fingerprint(bad_program, ref, precision=6)
+        fp2 = compute_fingerprint(bad_program, ref, precision=6)
+        assert isinstance(fp1, bytes)
+        assert fp1 == fp2
+
+    def test_error_fingerprints_distinguish_program_structure(self) -> None:
+        """Fallback fingerprints should still separate different failed programs."""
+        ref = _make_context(10)
+
+        def _raise_value_error(_a: np.ndarray) -> np.ndarray:
+            raise ValueError("invalid parameter combination")
+
+        bad_primitive = PrimitiveInfo(
+            name="boom",
+            category="numeric",
+            arity=1,
+            input_types=(Series,),
+            output_type=Series,
+            callable=_raise_value_error,
+        )
+        bad_close = FunctionNode(
+            primitive=bad_primitive,
+            children=(TerminalNode(name="close", output_type=Series),),
+        )
+        bad_volume = FunctionNode(
+            primitive=bad_primitive,
+            children=(TerminalNode(name="volume", output_type=Series),),
+        )
+        fp_close = compute_fingerprint(bad_close, ref, precision=6)
+        fp_volume = compute_fingerprint(bad_volume, ref, precision=6)
+        assert fp_close != fp_volume
+
 
 # --- sample_reference_context -----------------------------------------------
 

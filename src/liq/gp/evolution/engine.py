@@ -141,7 +141,6 @@ def evolve(
     injection_event_counter = 0
 
     for gen in range(config.generations):
-        fingerprints: list[bytes] | None = None
         # --- Determine evaluation context (batch vs full) ---
         batch_size = config.fitness.batch_size
         if batch_size is None or gen % config.fitness.full_eval_interval == 0:
@@ -178,13 +177,14 @@ def evolve(
             config,
             pareto_front_size=pareto_front_size,
         )
-        if config.semantic_dedup_enabled:
-            fingerprints = _compute_semantic_fingerprints(
-                population,
-                ref_context,
-                config.semantic_precision,
-            )
-            unique_semantics_ratio = _compute_unique_semantics_ratio_from_fingerprints(
+        fingerprints = _compute_semantic_fingerprints(
+            population,
+            ref_context,
+            config.semantic_precision,
+        )
+        stats = replace(
+            stats,
+            unique_semantics_ratio=_compute_unique_semantics_ratio_from_fingerprints(
                 fingerprints
             ),
             scheduler_metrics=scheduler_metrics,
@@ -406,60 +406,15 @@ def evolve(
                     config.semantic_precision,
                 )
 
-        # --- Seed injection ---
-        # NOTE: Stats were computed above from the evaluated population.
-        # Injection replaces worst individuals for the *next* generation;
-        # injected_count is patched into stats as additive metadata.
-        injected_count = 0
-        if config.seed_injection is not None:
-            from liq.gp.evolution.injection import inject_seeds
-
-            # Always re-evaluate to ensure fitnesses reflect current population
-            # state (including any constant optimization modifications).
-            fitnesses = _evaluate_population(
-                population,
-                evaluator,
-                context,
-            )
-            # Recompute NSGA-II rankings for the new population
-            inj_ranks: list[int] | None = None
-            inj_crowding: list[float] | None = None
-            if config.selection_mode == "nsga2":
-                _, inj_ranks, inj_crowding = compute_nsga2_rankings(fitnesses, config)
-            population, injected_count = inject_seeds(
-                population,
-                fitnesses,
-                seed_programs,
-                config,
-                registry,
-                rng,
-                gen,
-                ranks=inj_ranks,
-                crowding=inj_crowding,
-                elite_indices=set(range(len(elites))),
-                injection_event=injection_event_counter,
-                output_type=population[0].output_type if population else None,
-            )
-            if injected_count > 0:
-                injection_event_counter += 1
-            # Recompute fingerprints if injection changed the population
-            if injected_count > 0 and config.semantic_dedup_enabled:
-                fingerprints = _compute_semantic_fingerprints(
-                    population,
-                    ref_context,
-                    config.semantic_precision,
-                )
-
         # --- Semantic deduplication ---
-        if config.semantic_dedup_enabled:
-            population, _ = deduplicate_population(
-                population,
-                ref_context,
-                registry,
-                config,
-                rng,
-                fingerprints=fingerprints,
-            )
+        population, _ = deduplicate_population(
+            population,
+            ref_context,
+            registry,
+            config,
+            rng,
+            fingerprints=fingerprints,
+        )
 
         # --- Generation reporting ---
         if injected_count > 0:

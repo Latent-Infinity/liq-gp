@@ -6,12 +6,15 @@ and duplicate replacement to maintain population diversity.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from liq.gp.program.eval import evaluate
+from liq.gp.program.serialize import serialize
 
 if TYPE_CHECKING:
     from liq.gp.config import GPConfig
@@ -38,7 +41,15 @@ def compute_fingerprint(
     Returns:
         A ``bytes`` object representing the semantic fingerprint.
     """
-    output = evaluate(program, ref_context)
+    try:
+        output = evaluate(program, ref_context)
+    except Exception:
+        # Some domain primitives can reject parameter combinations
+        # (e.g. period constraints). Avoid crashing evolution; fall back to a
+        # deterministic structure fingerprint so dedup remains well-defined.
+        payload = serialize(program)
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).digest()
     # Replace NaN with 0.0 for deterministic fingerprinting
     output = np.where(np.isnan(output), 0.0, output)
     rounded = np.round(output, decimals=precision)
