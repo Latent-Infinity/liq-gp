@@ -159,7 +159,6 @@ SHARED = {
     "tournament_size": 5,
     "elitism_count": 3,
     "constant_opt_enabled": False,
-    "semantic_dedup_enabled": True,
 }
 
 

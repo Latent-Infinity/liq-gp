@@ -9,7 +9,7 @@ class TestSubpackageImports:
     def test_import_root(self) -> None:
         import liq.gp
 
-        assert hasattr(liq.gp, "__version__")
+        assert hasattr(liq.gp, "__all__")
 
     def test_import_config(self) -> None:
         from liq.gp import config  # noqa: F401

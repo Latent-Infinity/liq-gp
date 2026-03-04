@@ -759,7 +759,6 @@ def _make_evolve_config(**overrides: object) -> GPConfig:
         "seed": 42,
         "constant_opt_enabled": False,
         "simplification_enabled": False,
-        "semantic_dedup_enabled": False,
         "elitism_count": 2,
         "tournament_size": 3,
     }
@@ -979,7 +978,6 @@ class TestEvolveInjectionFeatureInteractions:
 
         reg = _make_registry()
         config = _make_evolve_config(
-            semantic_dedup_enabled=True,
             seed_injection=SeedInjectionConfig(interval=2, count=2, method="ramped"),
         )
         ctx = _make_context()
@@ -1343,8 +1341,7 @@ class TestConstOptFitnessConsistency:
             generations=4,
             elitism_count=2,
             constant_opt_enabled=True,
-            constant_opt_method="scipy",
-            constant_opt_budget=5,
+            constant_opt_max_evals=5,
             seed_injection=SeedInjectionConfig(
                 method="ramped",
                 count=2,

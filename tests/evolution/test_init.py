@@ -64,6 +64,36 @@ def _make_registry() -> PrimitiveRegistry:
     return reg
 
 
+def _make_discrete_registry() -> PrimitiveRegistry:
+    reg = PrimitiveRegistry()
+
+    reg.register("close", lambda: None, input_types=(), output_type=Series)
+    reg.register("volume", lambda: None, input_types=(), output_type=Series)
+    reg.register(
+        "add",
+        lambda a, b: a + b,
+        category="numeric",
+        input_types=(Series, Series),
+        output_type=Series,
+    )
+    reg.register(
+        "highest",
+        lambda a, *, period=20: a,
+        category="indicator",
+        input_types=(Series,),
+        output_type=Series,
+        param_specs=[
+            ParamSpec(
+                name="period",
+                dtype=int,
+                default=34,
+                allowed_values=[2, 3, 5, 8, 13, 21, 34, 55],
+            )
+        ],
+    )
+    return reg
+
+
 def _make_config(**overrides: object) -> GPConfig:
     """Build a GPConfig with sensible test defaults."""
     defaults: dict[str, object] = {
@@ -285,6 +315,21 @@ class TestParameterizedNodeSampling:
                             assert isinstance(val, int), (
                                 f"{ps.name}={val} should be int"
                             )
+
+    def test_params_sampled_from_allowed_values(self) -> None:
+        """Discrete ParamSpec values are drawn only from allowed_values."""
+        from liq.gp.evolution.init import initialize_population
+
+        reg = _make_discrete_registry()
+        config = _make_config(population_size=200, max_depth=4, seed=321)
+        pop = initialize_population(reg, config)
+
+        for tree in pop:
+            for node in _collect_nodes(tree):
+                if isinstance(node, ParameterizedNode):
+                    for ps in node.primitive.param_specs:
+                        if ps.value_is_discrete():
+                            assert node.params[ps.name] in ps.allowed_values
 
 
 # --- Determinism -----------------------------------------------------------

@@ -64,7 +64,6 @@ def _minimal_config(**overrides: object) -> GPConfig:
         "seed": 42,
         "constant_opt_enabled": False,
         "simplification_enabled": False,
-        "semantic_dedup_enabled": False,
         "elitism_count": 2,
         "tournament_size": 3,
     }
@@ -462,7 +461,6 @@ class TestMinimalViableEvolution:
             elitism_count=1,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = SimpleFitnessEvaluator()
@@ -485,7 +483,6 @@ class TestMinimalViableEvolution:
             elitism_count=1,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = SimpleFitnessEvaluator()

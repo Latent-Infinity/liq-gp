@@ -9,6 +9,8 @@ Functions
 
 from __future__ import annotations
 
+from collections import Counter
+
 from typing import TYPE_CHECKING
 
 from liq.gp.types import FitnessResult
@@ -51,11 +53,24 @@ def apply_parsimony(
     ``"linear"``
         Subtract ``parsimony_coefficient * program.size`` from the first
         objective.
+    ``"size_diversity"``
+        Add a size-density objective rewarding under-represented tree sizes.
     """
     mode = config.parsimony_mode
 
     if mode == "disabled":
         return list(fitnesses)
+
+    if mode == "size_diversity":
+        size_counts = Counter(prog.size for prog in population)
+        size_scores = {size: 1.0 / count for size, count in size_counts.items()}
+        return [
+            FitnessResult(
+                objectives=fr.objectives + (size_scores[prog.size],),
+                metadata={**fr.metadata, "raw_objectives": fr.objectives},
+            )
+            for fr, prog in zip(fitnesses, population, strict=True)
+        ]
 
     if mode == "lexicographic":
         return [

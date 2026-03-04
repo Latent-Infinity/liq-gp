@@ -40,3 +40,6 @@ dmypy.json
 
 # macOS
 .DS_Store
+
+# Serena
+.serena/

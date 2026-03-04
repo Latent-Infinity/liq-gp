@@ -252,7 +252,6 @@ def main() -> None:
         constant_opt_top_k=0.1,
         # Simplification and dedup
         simplification_enabled=True,
-        semantic_dedup_enabled=True,
         # Early stopping: halt if no improvement for 20 generations
         early_stop_patience=20,
         early_stop_threshold=1e-6,

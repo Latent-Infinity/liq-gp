@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from liq.gp.config import FitnessConfig, GPConfig
 from liq.gp.evolution.selection import (
@@ -12,7 +14,11 @@ from liq.gp.evolution.selection import (
     crowding_distance,
     get_elites,
     non_dominated_sort,
+    _case_epsilon,
+    _downsample_cases,
     nsga2_select,
+    _prepare_lexicase_case_scores,
+    lexicase_select,
     select,
     tournament_select,
 )
@@ -29,6 +35,27 @@ def _make_programs(n: int) -> list[Program]:
 
 def _make_fitness(objectives: tuple[float, ...]) -> FitnessResult:
     return FitnessResult(objectives=objectives)
+
+
+def _make_fitness_with_metadata(
+    objectives: tuple[float, ...],
+    metadata: dict,
+) -> FitnessResult:
+    return FitnessResult(objectives=objectives, metadata=metadata)
+
+
+def _make_lexicase_fitnesses(
+    scores: list[float],
+    slice_key: str = "s1",
+) -> list[FitnessResult]:
+    """Create fitnesses with single-slice metadata."""
+    return [
+        _make_fitness_with_metadata(
+            (1.0,),
+            {"slice_scores": {slice_key: float(score)}},
+        )
+        for score in scores
+    ]
 
 
 def _tournament_config(**overrides) -> GPConfig:
@@ -57,6 +84,22 @@ def _nsga2_config(**overrides) -> GPConfig:
         "fitness": FitnessConfig(
             objectives=["accuracy", "complexity"],
             objective_directions=["maximize", "minimize"],
+        ),
+    }
+    defaults.update(overrides)
+    return GPConfig(**defaults)
+
+
+def _lexicase_config(**overrides) -> GPConfig:
+    """Return a lexicase-mode config with sensible defaults."""
+    defaults = {
+        "population_size": 10,
+        "tournament_size": 3,
+        "elitism_count": 2,
+        "selection_mode": "lexicase",
+        "fitness": FitnessConfig(
+            objectives=["fitness"],
+            objective_directions=["maximize"],
         ),
     }
     defaults.update(overrides)
@@ -399,6 +442,276 @@ class TestNSGA2Select:
 
 
 # ===========================================================================
+# Lexicase selection
+# ===========================================================================
+
+
+class TestLexicaseSelection:
+    """lexicase_select implements aligned slice-score selection."""
+
+    def test_aligns_case_keys_and_penalizes_missing(self) -> None:
+        """Missing keys are filled with nan_penalty for lexicase comparability."""
+        pop = _make_programs(3)
+        fit = [
+            _make_fitness_with_metadata(
+                (1.0,),
+                {"slice_scores": {"time_window:2024": 1.0, "volume:high": 2.0}},
+            ),
+            _make_fitness_with_metadata(
+                (1.0,),
+                {"slice_scores": {"time_window:2024": 1.0}},
+            ),
+            _make_fitness_with_metadata((1.0,), {}),
+        ]
+        config = _lexicase_config(lexicase_nan_penalty=99.0)
+        case_ids, epsilons, aligned = _prepare_lexicase_case_scores(fit, config)
+        assert case_ids == ["time_window:2024", "volume:high"]
+        assert epsilons == [0.0, 0.0]
+        assert aligned[0] == [1.0, 2.0]
+        assert aligned[1] == [1.0, 99.0]
+        assert aligned[2] == [99.0, 99.0]
+
+    def test_filled_keys_disfavor_selection(self) -> None:
+        """Individuals with filled penalty entries should be filtered out on that case."""
+        pop = _make_programs(10)
+        fit = [
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"common": 0.2}}),
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"common": 0.5}}),
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness_with_metadata((1.0,), {}),
+        ]
+        config = _lexicase_config(elitism_count=7)
+        selected = lexicase_select(pop, fit, config, np.random.default_rng(1))
+        assert selected == [pop[0], pop[0], pop[0]]
+
+    def test_raw_objectives_and_slice_scores_incompatibility_is_rejected(self) -> None:
+        """Invalid raw_objectives length/slice_scores mismatch should raise."""
+        fit = [
+            _make_fitness_with_metadata(
+                (1.0,),
+                {
+                    "raw_objectives": (1.0, 2.0),
+                    "slice_scores": {"case_a": 0.1},
+                },
+            ),
+            _make_fitness_with_metadata((2.0,), {}),
+        ]
+        config = _lexicase_config()
+        with pytest.raises(ValueError, match="dimensions are incompatible"):
+            _prepare_lexicase_case_scores(fit, config)
+
+    def test_missing_slice_scores_for_all_is_rejected(self) -> None:
+        """Lexicase mode requires at least one per-slice key."""
+        pop = _make_programs(3)
+        fit = [
+            _make_fitness_with_metadata((1.0,), {}),
+            _make_fitness((1.0,)),
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {}}),
+        ]
+        config = _lexicase_config()
+        with pytest.raises(ValueError, match="requires metadata\\['slice_scores'\\]"):
+            _prepare_lexicase_case_scores(fit, config)
+
+    def test_lexicase_prefers_better_slice_scores(self) -> None:
+        """Single-case lexicase always picks the lowest-loss program."""
+        pop = _make_programs(10)
+        fit = _make_lexicase_fitnesses([10.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        config = _lexicase_config(population_size=10, elitism_count=7)
+        selected = lexicase_select(pop, fit, config, np.random.default_rng(7))
+        assert selected == [pop[2], pop[2], pop[2]]
+
+    def test_lexicase_uses_case_loss_without_objective_direction(self) -> None:
+        """Slice scores are treated as loss values regardless of objective direction."""
+        pop = _make_programs(10)
+        fit = _make_lexicase_fitnesses([10.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        config_maximize = _lexicase_config(population_size=10, elitism_count=7)
+        config_minimize = _lexicase_config(
+            population_size=10,
+            elitism_count=7,
+            fitness=FitnessConfig(
+                objectives=["loss"],
+                objective_directions=["minimize"],
+            ),
+        )
+        selected_max = lexicase_select(pop, fit, config_maximize, np.random.default_rng(7))
+        selected_min = lexicase_select(pop, fit, config_minimize, np.random.default_rng(7))
+        assert selected_max == [pop[2], pop[2], pop[2]]
+        assert selected_max == selected_min
+
+    def test_lexicase_select_dispatches(self) -> None:
+        """select dispatches to lexicase mode."""
+        pop = _make_programs(10)
+        fit = _make_lexicase_fitnesses([0.0, 0.5, 1.0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+        config = _lexicase_config()
+        rng = np.random.default_rng(1)
+        result = select(pop, fit, config, rng)
+        direct = lexicase_select(pop, fit, config, np.random.default_rng(1))
+        assert result == direct
+
+    def test_lexicase_eps_allows_tolerance(self) -> None:
+        """MAD epsilon keeps near-best cases in the candidate set."""
+        # Column values produce MAD > 0.
+        fit = [
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"c1": 0.0}}),
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"c1": 1.0}}),
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"c1": 2.0}}),
+        ]
+        config = _lexicase_config(
+            selection_mode="lexicase_eps",
+            lexicase_epsilon_strategy="mad",
+            elitism_count=0,
+        )
+        case_ids, epsilons, _aligned = _prepare_lexicase_case_scores(fit, config)
+        assert case_ids == ["c1"]
+        assert epsilons == [1.0]
+
+    def test_downsample_cases_random(self) -> None:
+        """Random down-sample policy returns a deterministic subset with a seed."""
+        cases = ["a", "b", "c", "d"]
+        config = _lexicase_config(
+            lexicase_downsample_policy="random",
+            lexicase_downsample_cases=2,
+            lexicase_downsample_min_cases=2,
+        )
+        rng = np.random.default_rng(10)
+        result = _downsample_cases(cases, config, rng)
+        rng = np.random.default_rng(10)
+        expected = _downsample_cases(cases, config, rng)
+        assert len(result) == 2
+        assert len(expected) == 2
+        assert set(result) == set(expected)
+
+    def test_downsample_cases_empty_list(self) -> None:
+        """Empty input returns empty list regardless of policy."""
+        assert _downsample_cases([], _lexicase_config(), np.random.default_rng(0)) == []
+
+    def test_downsample_cases_informed(self) -> None:
+        """Informed down-sample uses metadata-provided case weights."""
+        cases = ["a", "b", "c", "d"]
+        case_weights = {"a": 1.0, "b": 10.0, "c": 5.0, "d": 1.0}
+        config = _lexicase_config(
+            lexicase_downsample_policy="informed",
+            lexicase_downsample_cases=2,
+            lexicase_downsample_min_cases=1,
+        )
+        rng = np.random.default_rng(77)
+        result = _downsample_cases(
+            cases,
+            config,
+            rng,
+            case_weights=case_weights,
+        )
+        assert result == ["b", "c"]
+
+    def test_downsample_cases_informed_fallback_when_no_weights(self) -> None:
+        """Informed policy falls back to random order when no useful weights are provided."""
+        cases = ["a", "b", "c"]
+        config = _lexicase_config(
+            lexicase_downsample_policy="informed",
+            lexicase_downsample_cases=2,
+            lexicase_downsample_min_cases=1,
+        )
+        rng = np.random.default_rng(1)
+        result = _downsample_cases(cases, config, rng, case_weights={})
+        rng = np.random.default_rng(1)
+        expected = _downsample_cases(cases, config, rng, case_weights={})
+        assert len(result) == 2
+        assert set(result) == set(expected)
+
+    def test_epsilon_percentile_schedule(self) -> None:
+        """Percentile epsilon returns expected quantiles."""
+        scores = [0.0, 1.0, 2.0, 3.0, 4.0]
+        assert _case_epsilon(scores, strategy="percentile", q=0.0) == 0.0
+        assert _case_epsilon(scores, strategy="percentile", q=100.0) == 4.0
+        assert _case_epsilon(scores, strategy="percentile", q=50.0) == 2.0
+
+    def test_epsilon_monotonic_with_percentile(self) -> None:
+        """Higher percentile should never decrease epsilon."""
+        scores = [0.0, 2.0, 100.0, 101.0, 103.0]
+        eps_25 = _case_epsilon(scores, strategy="percentile", q=25.0)
+        eps_50 = _case_epsilon(scores, strategy="percentile", q=50.0)
+        eps_75 = _case_epsilon(scores, strategy="percentile", q=75.0)
+        assert eps_25 <= eps_50 <= eps_75
+
+    def test_epsilon_handles_extremes_and_singleton(self) -> None:
+        """Extreme values and singleton inputs are handled without errors."""
+        assert _case_epsilon([], strategy="mad", q=50.0) == 0.0
+        assert _case_epsilon([0.0], strategy="mad", q=50.0) == 0.0
+        assert _case_epsilon([1.0, 1.0, 1.0], strategy="mad", q=50.0) == 0.0
+        assert _case_epsilon([3.0, 7.0, 5.0], strategy="percentile", q=0.0) == 3.0
+        assert _case_epsilon([3.0, 7.0, 5.0], strategy="percentile", q=100.0) == 7.0
+
+    def test_epsilon_negative_scores(self) -> None:
+        """Negative values are preserved correctly for both MAD and percentile."""
+        values = [-4.0, -2.0, 0.0]
+        assert _case_epsilon(values, strategy="mad", q=50.0) == 2.0
+        assert _case_epsilon(values, strategy="percentile", q=50.0) == -2.0
+
+
+# ===========================================================================
+# Epsilon-based selector behavior
+# ===========================================================================
+
+
+class TestLexicaseValidation:
+    """Invalid inputs are surfaced consistently."""
+
+    def test_invalid_selection_mode_rejected(self) -> None:
+        """Non-configured selection modes fail fast."""
+        pop = _make_programs(4)
+        fit = _make_lexicase_fitnesses([0.0, 1.0, 2.0, 3.0])
+        config = SimpleNamespace(
+            selection_mode="not-a-mode",
+            population_size=4,
+            elitism_count=0,
+            tournament_size=2,
+            lexicase_downsample_policy="none",
+            lexicase_downsample_cases=None,
+            lexicase_downsample_min_cases=1,
+            lexicase_epsilon_strategy="mad",
+            lexicase_epsilon_percentile=50.0,
+            lexicase_nan_penalty=1e6,
+        )
+        with pytest.raises(ValueError, match="Unknown selection mode"):
+            select(pop, fit, config, np.random.default_rng(1))
+
+    def test_mismatched_slice_payloads_are_filled_with_penalty(self) -> None:
+        """Non-dict slice metadata still aligns with the union key set."""
+        pop = _make_programs(2)
+        fit = [
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"s1": "bad"}}),
+            _make_fitness_with_metadata((1.0,), {"slice_scores": ["not", "a", "dict"]}),
+        ]
+        config = _lexicase_config(population_size=10, elitism_count=1)
+        case_ids, epsilons, aligned = _prepare_lexicase_case_scores(fit, config)
+        assert case_ids == ["s1"]
+        assert epsilons == [0.0]
+        assert aligned == [[config.lexicase_nan_penalty], [config.lexicase_nan_penalty]]
+
+    def test_non_lexicase_modes_ignore_slice_scores(self) -> None:
+        """Only lexicase modes inspect slice_scores."""
+        pop = _make_programs(5)
+        fit = [
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"s1": 100.0}}),
+            _make_fitness_with_metadata((2.0,), {}),
+            _make_fitness_with_metadata((3.0,), {"slice_scores": {"s1": -999.0}}),
+            _make_fitness((4.0,)),
+            _make_fitness_with_metadata((5.0,), {"slice_scores": {"s1": float("inf")}}),
+        ]
+        config = _tournament_config(elitism_count=0)
+        rng = np.random.default_rng(9)
+        result = select(pop, fit, config, rng)
+        expected = tournament_select(pop, fit, config, np.random.default_rng(9))
+        assert result == expected
+
+
+# ===========================================================================
 # Elitism
 # ===========================================================================
 
@@ -431,6 +744,20 @@ class TestGetElites:
         elites = get_elites(pop, fit, config)
         elite_names = {p.name for p in elites if isinstance(p, TerminalNode)}
         assert elite_names == {"p0", "p1"}
+
+    def test_lexicase_elites_use_objective_ranking(self) -> None:
+        """Lexicase modes should still use objective-based elites."""
+        pop = _make_programs(5)
+        fit = [
+            _make_fitness((1.0,)),
+            _make_fitness((3.0,)),
+            _make_fitness((5.0,)),
+            _make_fitness((2.0,)),
+            _make_fitness((4.0,)),
+        ]
+        config = _lexicase_config(selection_mode="lexicase_eps", elitism_count=2)
+        elites = get_elites(pop, fit, config)
+        assert elites == [pop[2], pop[4]]
 
     def test_tournament_elites_lexicographic_tie_break(self) -> None:
         """Elites use secondary objective when primary objective ties."""
@@ -545,6 +872,50 @@ class TestSelectDispatcher:
         result_direct = nsga2_select(pop, fit, config, np.random.default_rng(42))
         assert result_dispatch == result_direct
 
+    def test_dispatches_to_lexicase(self) -> None:
+        pop = _make_programs(10)
+        fit = [
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"s1": 0.0}}),
+            _make_fitness_with_metadata((2.0,), {"slice_scores": {"s1": 0.5}}),
+            _make_fitness_with_metadata((3.0,), {"slice_scores": {"s1": 1.0}}),
+            _make_fitness_with_metadata((4.0,), {"slice_scores": {"s1": 1.2}}),
+            _make_fitness_with_metadata((5.0,), {"slice_scores": {"s1": 1.4}}),
+            _make_fitness_with_metadata((6.0,), {"slice_scores": {"s1": 1.6}}),
+            _make_fitness_with_metadata((7.0,), {"slice_scores": {"s1": 1.8}}),
+            _make_fitness_with_metadata((8.0,), {"slice_scores": {"s1": 2.0}}),
+            _make_fitness_with_metadata((9.0,), {"slice_scores": {"s1": 2.2}}),
+            _make_fitness_with_metadata((10.0,), {"slice_scores": {"s1": 2.4}}),
+        ]
+        config = _lexicase_config()
+        rng = np.random.default_rng(9)
+        result_dispatch = select(pop, fit, config, rng)
+        result_direct = lexicase_select(pop, fit, config, np.random.default_rng(9))
+        assert result_dispatch == result_direct
+
+    def test_dispatches_to_lexicase_eps(self) -> None:
+        pop = _make_programs(10)
+        fit = [
+            _make_fitness_with_metadata((1.0,), {"slice_scores": {"s1": 0.0}}),
+            _make_fitness_with_metadata((2.0,), {"slice_scores": {"s1": 1.0}}),
+            _make_fitness_with_metadata((3.0,), {"slice_scores": {"s1": 2.0}}),
+            _make_fitness_with_metadata((4.0,), {"slice_scores": {"s1": 2.5}}),
+            _make_fitness_with_metadata((5.0,), {"slice_scores": {"s1": 3.0}}),
+            _make_fitness_with_metadata((6.0,), {"slice_scores": {"s1": 3.5}}),
+            _make_fitness_with_metadata((7.0,), {"slice_scores": {"s1": 4.0}}),
+            _make_fitness_with_metadata((8.0,), {"slice_scores": {"s1": 4.5}}),
+            _make_fitness_with_metadata((9.0,), {"slice_scores": {"s1": 5.0}}),
+            _make_fitness_with_metadata((10.0,), {"slice_scores": {"s1": 5.5}}),
+        ]
+        config = _lexicase_config(
+            selection_mode="lexicase_eps",
+            lexicase_epsilon_strategy="mad",
+            elitism_count=0,
+        )
+        rng = np.random.default_rng(11)
+        result_dispatch = select(pop, fit, config, rng)
+        result_direct = lexicase_select(pop, fit, config, np.random.default_rng(11))
+        assert result_dispatch == result_direct
+
 
 # ===========================================================================
 # Determinism
@@ -575,3 +946,15 @@ class TestDeterminism:
         e1 = get_elites(pop, fit, config)
         e2 = get_elites(pop, fit, config)
         assert e1 == e2
+
+    def test_lexicase_select_is_deterministic(self) -> None:
+        """Lexicase selection is deterministic for a fixed seed."""
+        pop = _make_programs(20)
+        fit = _make_lexicase_fitnesses(
+            [2.0, 1.0, 3.0, 0.5, 4.0, 5.0, 2.0, 2.5, 3.5, 1.5, 4.5, 0.1, 2.5, 3.2, 1.2, 0.2, 2.8, 3.8, 4.8, 5.0],
+            slice_key="s1",
+        )
+        config = _lexicase_config(population_size=20, elitism_count=3)
+        first = lexicase_select(pop, fit, config, np.random.default_rng(123))
+        second = lexicase_select(pop, fit, config, np.random.default_rng(123))
+        assert first == second

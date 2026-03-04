@@ -22,6 +22,7 @@ from liq.gp.evolution.init import (
     validate_seed_programs,
 )
 from liq.gp.evolution.injection import inject_seeds
+from liq.gp.evolution.objective_adapter import ObjectiveVectorAdapter
 from liq.gp.primitives.registry import PrimitiveInfo, PrimitiveRegistry
 from liq.gp.program.ast import (
     ConstantNode,
@@ -30,11 +31,24 @@ from liq.gp.program.ast import (
     Program,
     TerminalNode,
 )
-from liq.gp.program.constants import optimize_constants
+from liq.gp.program.constants import (
+    optimize_constants,
+)
 from liq.gp.program.eval import evaluate
-from liq.gp.program.serialize import deserialize, serialize
+from liq.gp.program.serialize import (
+    deserialize,
+    deserialize_result,
+    serialize,
+    serialize_result,
+)
 from liq.gp.program.simplify import simplify
-from liq.gp.protocols import FitnessEvaluator
+from liq.gp.protocols import FitnessEvaluator, GenerationCallback
+from liq.gp.types_regime import (
+    RegimeCompilerError,
+    RegimeModelContractError,
+    RegimePrimitiveContractError,
+    compile_regime_model_to_program,
+)
 from liq.gp.types import (
     BoolSeries,
     EvolutionResult,
@@ -75,13 +89,21 @@ __all__ = [
     "optimize_constants",
     "serialize",
     "deserialize",
+    "serialize_result",
+    "deserialize_result",
     # Evolution
     "evolve",
     "validate_seed_programs",
     "initialize_seeded_population",
     "inject_seeds",
+    "ObjectiveVectorAdapter",
+    "compile_regime_model_to_program",
+    "RegimeCompilerError",
+    "RegimeModelContractError",
+    "RegimePrimitiveContractError",
     # Protocols
     "FitnessEvaluator",
+    "GenerationCallback",
     # Errors
     "GPError",
     "PrimitiveError",
@@ -91,5 +113,3 @@ __all__ = [
     "SerializationError",
     "ConfigurationError",
 ]
-
-__version__ = "0.1.1"

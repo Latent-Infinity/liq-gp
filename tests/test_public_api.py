@@ -130,6 +130,16 @@ class TestPublicAPIImports:
 
         assert callable(deserialize)
 
+    def test_serialize_result(self) -> None:
+        from liq.gp import serialize_result
+
+        assert callable(serialize_result)
+
+    def test_deserialize_result(self) -> None:
+        from liq.gp import deserialize_result
+
+        assert callable(deserialize_result)
+
     # -- Evolution --
 
     def test_evolve(self) -> None:
@@ -142,6 +152,11 @@ class TestPublicAPIImports:
 
         assert FitnessEvaluator is not None
 
+    def test_generation_callback(self) -> None:
+        from liq.gp import GenerationCallback
+
+        assert GenerationCallback is not None
+
     def test_validate_seed_programs(self) -> None:
         from liq.gp import validate_seed_programs
 
@@ -151,6 +166,24 @@ class TestPublicAPIImports:
         from liq.gp import initialize_seeded_population
 
         assert callable(initialize_seeded_population)
+
+    def test_objective_vector_adapter(self) -> None:
+        from liq.gp import ObjectiveVectorAdapter
+
+        assert ObjectiveVectorAdapter is not None
+
+    def test_regime_model_compiler(self) -> None:
+        from liq.gp import (
+            RegimeCompilerError,
+            RegimeModelContractError,
+            RegimePrimitiveContractError,
+            compile_regime_model_to_program,
+        )
+
+        assert callable(compile_regime_model_to_program)
+        assert RegimeCompilerError is not None
+        assert RegimeModelContractError is not None
+        assert RegimePrimitiveContractError is not None
 
     # -- Errors --
 
@@ -226,12 +259,20 @@ class TestAllExports:
         "optimize_constants",
         "serialize",
         "deserialize",
+        "serialize_result",
+        "deserialize_result",
         # Evolution
         "evolve",
         "validate_seed_programs",
         "initialize_seeded_population",
         "inject_seeds",
+        "ObjectiveVectorAdapter",
         "FitnessEvaluator",
+        "GenerationCallback",
+        "compile_regime_model_to_program",
+        "RegimeCompilerError",
+        "RegimeModelContractError",
+        "RegimePrimitiveContractError",
         # Errors
         "GPError",
         "PrimitiveError",
@@ -253,6 +294,7 @@ class TestAllExports:
         for name in liq.gp.__all__:
             assert hasattr(liq.gp, name), f"{name} in __all__ but not importable"
 
-    def test_version_defined(self) -> None:
-        assert hasattr(liq.gp, "__version__")
-        assert isinstance(liq.gp.__version__, str)
+    def test_version_from_metadata(self) -> None:
+        from importlib.metadata import version
+
+        assert isinstance(version("liq-gp"), str)

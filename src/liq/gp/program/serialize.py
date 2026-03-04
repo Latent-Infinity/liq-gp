@@ -208,7 +208,7 @@ def serialize_result(result: Any) -> dict[str, Any]:
         "fitness_history": [
             _serialize_generation_stats(s) for s in result.fitness_history
         ],
-        "config": result.config.model_dump(),
+        "config": result.config.model_dump(mode="json"),
     }
 
 

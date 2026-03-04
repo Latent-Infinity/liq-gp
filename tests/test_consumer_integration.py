@@ -144,7 +144,6 @@ class TestConsumerSingleObjective:
             tournament_size=3,
             constant_opt_enabled=False,
             simplification_enabled=True,
-            semantic_dedup_enabled=False,
             elitism_count=2,
         )
         context = _make_context()
@@ -164,7 +163,6 @@ class TestConsumerSingleObjective:
             tournament_size=3,
             constant_opt_enabled=False,
             simplification_enabled=True,
-            semantic_dedup_enabled=False,
             elitism_count=2,
         )
         context = _make_context()
@@ -184,7 +182,6 @@ class TestConsumerSingleObjective:
             tournament_size=3,
             constant_opt_enabled=False,
             simplification_enabled=True,
-            semantic_dedup_enabled=False,
             elitism_count=2,
         )
         context = _make_context()
@@ -208,7 +205,6 @@ class TestConsumerSingleObjective:
             tournament_size=3,
             constant_opt_enabled=False,
             simplification_enabled=True,
-            semantic_dedup_enabled=False,
             elitism_count=2,
         )
         context = _make_context(n=80)
@@ -242,7 +238,6 @@ class TestConsumerMultiObjective:
             selection_mode="nsga2",
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
             fitness=FitnessConfig(
                 objectives=["accuracy", "parsimony"],
                 objective_directions=["maximize", "maximize"],
@@ -265,7 +260,6 @@ class TestConsumerMultiObjective:
             selection_mode="nsga2",
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
             fitness=FitnessConfig(
                 objectives=["accuracy", "parsimony"],
                 objective_directions=["maximize", "maximize"],
@@ -291,7 +285,6 @@ class TestConsumerMultiObjective:
             selection_mode="nsga2",
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
             fitness=FitnessConfig(
                 objectives=["placeholder_a", "placeholder_b"],
                 objective_directions=["maximize", "maximize"],
@@ -345,7 +338,6 @@ class TestConsumerWithParameterizedPrimitive:
             tournament_size=3,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
             elitism_count=2,
         )
         context = _make_context()
@@ -376,7 +368,6 @@ class TestConsumerWithParameterizedPrimitive:
             tournament_size=3,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
             elitism_count=2,
         )
         context = _make_context(n=50)
@@ -405,7 +396,6 @@ class TestConsumerCallbackPattern:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = SingleObjectiveEvaluator(lambda ctx: ctx["x"])
@@ -430,7 +420,6 @@ class TestConsumerCallbackPattern:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = SingleObjectiveEvaluator(lambda ctx: ctx["x"])
@@ -457,7 +446,6 @@ class TestConsumerCallbackPattern:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = SingleObjectiveEvaluator(lambda ctx: ctx["x"])
@@ -496,7 +484,6 @@ class TestConsumerSerializationPattern:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = SingleObjectiveEvaluator(lambda ctx: ctx["x"] ** 2 + ctx["x"])
@@ -516,7 +503,6 @@ class TestConsumerSerializationPattern:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = SingleObjectiveEvaluator(lambda ctx: ctx["x"] ** 2 + ctx["x"])

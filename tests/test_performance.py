@@ -116,7 +116,6 @@ class TestPopulationScaling:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
 
         start = time.monotonic()
@@ -139,7 +138,6 @@ class TestPopulationScaling:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
 
         start = time.monotonic()
@@ -261,7 +259,6 @@ class TestNFRPerformanceClaims:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=True,
-            semantic_dedup_enabled=True,
         )
 
         start_eval = time.monotonic()
@@ -396,7 +393,6 @@ class TestFullEvolutionPerformance:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context(n=200)
         evaluator = SimpleFitnessEvaluator()
@@ -420,7 +416,6 @@ class TestFullEvolutionPerformance:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=True,
-            semantic_dedup_enabled=True,
             semantic_ref_size=20,
         )
         context = _make_context(n=100)

@@ -184,6 +184,7 @@ def _generate_variation(
     from liq.gp.evolution.init import generate_grow
     from liq.gp.evolution.operators import (
         hoist_mutation,
+        module_preserving_crossover,
         parameter_mutation,
         point_mutation,
         select_operator,
@@ -210,14 +211,24 @@ def _generate_variation(
             p1 = seeds[pi % len(seeds)]
             p2 = seeds[(pi + 1) % len(seeds)]
             pi += 2
-            child1, child2 = subtree_crossover(
-                p1,
-                p2,
-                registry,
-                config.max_depth,
-                rng,
-                max_attempts=config.max_crossover_attempts,
-            )
+            if config.crossover_mode == "module_preserving":
+                child1, child2 = module_preserving_crossover(
+                    p1,
+                    p2,
+                    registry,
+                    config.max_depth,
+                    rng,
+                    max_attempts=config.max_crossover_attempts,
+                )
+            else:
+                child1, child2 = subtree_crossover(
+                    p1,
+                    p2,
+                    registry,
+                    config.max_depth,
+                    rng,
+                    max_attempts=config.max_crossover_attempts,
+                )
             for child in (child1, child2):
                 if enforce_constraints(child, config) and len(offspring) < count:
                     offspring.append(child)

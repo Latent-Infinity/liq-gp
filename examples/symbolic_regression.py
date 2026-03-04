@@ -156,7 +156,6 @@ def main() -> None:
         # Enable built-in optimizations
         constant_opt_enabled=True,
         simplification_enabled=True,
-        semantic_dedup_enabled=True,
     )
 
     print("Evolving programs to fit y = x^2 + 2x + 1 ...")

@@ -88,6 +88,16 @@ def _is_constant(node: Program, value: float) -> bool:
     return isinstance(node, ConstantNode) and node.value == value
 
 
+def _is_zero(node: Program) -> bool:
+    """Return True if *node* is a zero constant."""
+    return _is_constant(node, 0.0)
+
+
+def _is_one(node: Program) -> bool:
+    """Return True if *node* is a one constant."""
+    return _is_constant(node, 1.0)
+
+
 def _identity_elimination(node: Program) -> Program | None:
     """x + 0 -> x, 0 + x -> x, x * 1 -> x, 1 * x -> x."""
     if not isinstance(node, FunctionNode):
@@ -146,6 +156,28 @@ def _self_cancellation(node: Program) -> Program | None:
     return None
 
 
+def _dead_branch_elimination(node: Program) -> Program | None:
+    """if(True, a, b) -> a, if(False, a, b) -> b.
+
+    The branch is selected purely from constant first-argument predicates.
+    """
+    if not isinstance(node, FunctionNode):
+        return None
+
+    if node.primitive.name not in ("if", "where"):
+        return None
+
+    children = node.children
+    if len(children) != 3:
+        return None
+
+    if _is_one(children[0]):
+        return children[1]
+    if _is_zero(children[0]):
+        return children[2]
+    return None
+
+
 def _double_negation(node: Program) -> Program | None:
     """neg(neg(x)) -> x."""
     if not isinstance(node, FunctionNode):
@@ -160,6 +192,38 @@ def _double_negation(node: Program) -> Program | None:
         and len(inner.children) == 1
     ):
         return inner.children[0]
+
+    return None
+
+
+def _double_not(node: Program) -> Program | None:
+    """not(not(x)) -> x."""
+    if not isinstance(node, FunctionNode):
+        return None
+    if node.primitive.name != "not" or len(node.children) != 1:
+        return None
+
+    inner = node.children[0]
+    if (
+        isinstance(inner, FunctionNode)
+        and inner.primitive.name == "not"
+        and len(inner.children) == 1
+    ):
+        return inner.children[0]
+
+    return None
+
+
+def _abs_idempotence(node: Program) -> Program | None:
+    """abs(abs(x)) -> abs(x)."""
+    if not isinstance(node, FunctionNode):
+        return None
+    if node.primitive.name != "abs" or len(node.children) != 1:
+        return None
+
+    inner = node.children[0]
+    if isinstance(inner, FunctionNode) and inner.primitive.name == "abs":
+        return inner
 
     return None
 
@@ -187,7 +251,14 @@ def _constant_folding(node: Program) -> Program | None:
     except Exception:  # noqa: BLE001 – guard against div-by-zero etc.
         return None
 
-    return ConstantNode(value=float(result), output_type=node.primitive.output_type)
+    try:
+        folded_value = float(result)
+    except (TypeError, ValueError):
+        # Non-scalar outputs (e.g. vectorized indicator calls) are not safe
+        # to fold into a scalar ConstantNode.
+        return None
+
+    return ConstantNode(value=folded_value, output_type=node.primitive.output_type)
 
 
 # ---------------------------------------------------------------------------
@@ -204,13 +275,16 @@ def default_rules() -> SimplificationRegistry:
     """
     registry = SimplificationRegistry()
     # Order matters: zero annihilation before identity so that ``mul(0, 1)``
-    # yields 0 rather than entering the identity path.  Self-cancellation
-    # and double negation are independent.  Constant folding is last so
-    # that algebraic simplifications get a chance first.
+    # yields 0 rather than entering the identity path.  Self-cancellation,
+    # dead-branch elimination, and boolean/absolute idempotence are applied
+    # before constant folding.
     registry.add_rule(_zero_annihilation, name="zero_annihilation")
     registry.add_rule(_identity_elimination, name="identity_elimination")
     registry.add_rule(_self_cancellation, name="self_cancellation")
+    registry.add_rule(_dead_branch_elimination, name="dead_branch_elimination")
     registry.add_rule(_double_negation, name="double_negation")
+    registry.add_rule(_double_not, name="double_not")
+    registry.add_rule(_abs_idempotence, name="abs_idempotence")
     registry.add_rule(_constant_folding, name="constant_folding")
     return registry
 

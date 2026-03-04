@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from liq.gp.config import FitnessConfig, GPConfig
 from liq.gp.primitives.registry import PrimitiveRegistry
@@ -12,6 +13,7 @@ from liq.gp.types import (
     EvolutionResult,
     FitnessResult,
     GenerationStats,
+    SelectionContext,
     Series,
 )
 
@@ -57,7 +59,6 @@ def _make_config(**overrides: object) -> GPConfig:
         "seed": 42,
         "constant_opt_enabled": False,
         "simplification_enabled": False,
-        "semantic_dedup_enabled": False,
         "elitism_count": 2,
         "tournament_size": 3,
     }
@@ -248,6 +249,287 @@ class TestEvolveDeterminism:
         assert h1 != h2
 
 
+class TestEvolveParentSourceHook:
+    """parent_source provides a pluggable parent-selection hook."""
+
+    def test_parent_source_invoked_by_default(self) -> None:
+        from liq.gp.evolution.engine import evolve
+
+        reg = _make_registry()
+        generations = 3
+        config = _make_config(generations=generations)
+        target_size = config.population_size - config.elitism_count
+        context = _make_context()
+
+        calls: list[tuple[int, int, int, tuple[bool, bool, bool]]] = []
+
+        class TrackingParentSource:
+            def __call__(
+                self,
+                population: list[Program],
+                fitnesses: list[FitnessResult],
+                config: GPConfig,
+                rng: np.random.Generator,
+                target_size_arg: int,
+                selection_context,
+            ) -> list[Program]:
+                calls.append(
+                    (
+                        len(population),
+                        len(fitnesses),
+                        target_size_arg,
+                        (
+                            selection_context.fronts is not None,
+                            selection_context.ranks is not None,
+                            selection_context.crowding is not None,
+                        ),
+                    )
+                )
+                return list(population[:target_size_arg])
+
+        evolve(
+            reg,
+            config,
+            SimpleFitnessEvaluator(context),
+            context,
+            parent_source=TrackingParentSource(),
+        )
+
+        assert len(calls) == generations
+        assert all(
+            pop_size == config.population_size
+            and fit_count == config.population_size
+            and target == target_size
+            for pop_size, fit_count, target, flags in calls
+        )
+        assert all(flags == (False, False, False) for _, _, _, flags in calls)
+
+    def test_parent_source_receives_nsga2_selection_context(self) -> None:
+        from liq.gp.evolution.engine import evolve
+
+        reg = _make_registry()
+        config = _make_config(
+            generations=2,
+            selection_mode="nsga2",
+            fitness=FitnessConfig(
+                objectives=["loss", "complexity"],
+                objective_directions=["minimize", "maximize"],
+            ),
+        )
+        context = _make_context()
+        contexts: list[SelectionContext] = []
+
+        class ContextParentSource:
+            def __call__(
+                self,
+                population: list[Program],
+                fitnesses: list[FitnessResult],
+                config: GPConfig,
+                rng: np.random.Generator,
+                target_size_arg: int,
+                selection_context,
+            ) -> list[Program]:
+                contexts.append(selection_context)
+                return list(population[:target_size_arg])
+
+        evolve(
+            reg,
+            config,
+            MultiObjectiveEvaluator(context),
+            context,
+            parent_source=ContextParentSource(),
+        )
+
+        assert contexts
+        assert all(
+            context.fronts is not None and context.ranks is not None and context.crowding is not None
+            for context in contexts
+        )
+        assert all(len(context.ranks) == config.population_size for context in contexts)
+        assert all(len(context.crowding) == config.population_size for context in contexts)
+
+    def test_parent_source_length_mismatch_raises(self) -> None:
+        from liq.gp.evolution.engine import evolve
+
+        reg = _make_registry()
+        config = _make_config(generations=1)
+        context = _make_context()
+
+        def bad_parent_source(
+            population: list[Program],
+            fitnesses: list[FitnessResult],
+            config: GPConfig,
+            rng: np.random.Generator,
+            target_size: int,
+            selection_context,
+        ) -> list[Program]:
+            return list(population[: max(target_size - 1, 0)])
+
+        with pytest.raises(ValueError, match="parent_source must return exactly target_size parents"):
+            evolve(
+                reg,
+                config,
+                SimpleFitnessEvaluator(context),
+                context,
+                parent_source=bad_parent_source,
+            )
+
+    def test_default_path_uses_engine_select(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        import liq.gp.evolution.engine as engine_module
+        from liq.gp.evolution.engine import evolve
+
+        reg = _make_registry()
+        config = _make_config(generations=2, population_size=10)
+        context = _make_context()
+        calls: dict[str, int] = {"select": 0}
+        real_select = engine_module.select
+
+        def wrapped_select(
+            population: list[Program],
+            fitnesses: list[FitnessResult],
+            config: GPConfig,
+            rng: np.random.Generator,
+            fronts=None,
+            ranks=None,
+            crowding=None,
+        ) -> list[Program]:
+            calls["select"] += 1
+            return real_select(
+                population,
+                fitnesses,
+                config,
+                rng,
+                fronts=fronts,
+                ranks=ranks,
+                crowding=crowding,
+            )
+
+        monkeypatch.setattr(engine_module, "select", wrapped_select)
+        evolve(
+            reg,
+            config,
+            SimpleFitnessEvaluator(context),
+            context,
+        )
+        assert calls["select"] == config.generations
+
+    def test_parent_source_can_return_duplicates(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        """parent_source may return duplicate parents and engine passes them through."""
+        from liq.gp.evolution.engine import evolve
+        import liq.gp.evolution.engine as engine_module
+
+        reg = _make_registry()
+        config = _make_config(
+            generations=1,
+            population_size=10,
+            elitism_count=6,
+            crossover_rate=1.0,
+            subtree_mutation_rate=0.0,
+            point_mutation_rate=0.0,
+            parameter_mutation_rate=0.0,
+            hoist_mutation_rate=0.0,
+        )
+        context = _make_context()
+        selected_parent_ids: list[list[int]] = []
+        crossover_pairs: list[tuple[int, int]] = []
+
+        class DuplicateParentSource:
+            def __call__(
+                self,
+                population: list[Program],
+                fitnesses: list[FitnessResult],
+                config: GPConfig,
+                rng: np.random.Generator,
+                target_size_arg: int,
+                selection_context,
+            ) -> list[Program]:
+                selected = [
+                    population[0],
+                    population[1],
+                    population[1],
+                    population[2],
+                ]
+                selected_parent_ids.append([id(p) for p in selected])
+                return selected
+
+        def fake_subtree_crossover(
+            p1: Program,
+            p2: Program,
+            registry: object,
+            max_depth: int,
+            rng: np.random.Generator,
+            max_attempts: int,
+        ) -> tuple[Program, Program]:
+            crossover_pairs.append((id(p1), id(p2)))
+            return p1, p1
+
+        monkeypatch.setattr(engine_module, "subtree_crossover", fake_subtree_crossover)
+
+        evolve(
+            reg,
+            config,
+            SimpleFitnessEvaluator(context),
+            context,
+            parent_source=DuplicateParentSource(),
+        )
+
+        assert selected_parent_ids
+        assert crossover_pairs
+        assert len(selected_parent_ids[0]) == 4
+        expected_parent_ids = selected_parent_ids[0]
+        assert expected_parent_ids[1] == expected_parent_ids[2]
+        assert selected_parent_ids[0][1] == selected_parent_ids[0][2]
+        assert crossover_pairs[0] == (expected_parent_ids[0], expected_parent_ids[1])
+        if len(crossover_pairs) > 1:
+            assert crossover_pairs[1] == (expected_parent_ids[2], expected_parent_ids[3])
+
+    def test_parent_source_deterministic(self) -> None:
+        """Reusing the same seeded configuration with deterministic parent_source is reproducible."""
+        from liq.gp.evolution.engine import evolve
+
+        reg = _make_registry()
+        config = _make_config(
+            generations=2,
+            population_size=10,
+            elitism_count=6,
+            crossover_rate=0.0,
+            subtree_mutation_rate=1.0,
+            point_mutation_rate=0.0,
+            parameter_mutation_rate=0.0,
+            hoist_mutation_rate=0.0,
+        )
+        context = _make_context()
+
+        class DeterministicParentSource:
+            def __call__(
+                self,
+                population: list[Program],
+                fitnesses: list[FitnessResult],
+                config: GPConfig,
+                rng: np.random.Generator,
+                target_size_arg: int,
+                selection_context,
+            ) -> list[Program]:
+                return list(population[:target_size_arg])
+
+        result1 = evolve(
+            reg,
+            config,
+            SimpleFitnessEvaluator(context),
+            context,
+            parent_source=DeterministicParentSource(),
+        )
+        result2 = evolve(
+            reg,
+            config,
+            SimpleFitnessEvaluator(context),
+            context,
+            parent_source=DeterministicParentSource(),
+        )
+        assert [stats.best_fitness for stats in result1.fitness_history] == [
+            stats.best_fitness for stats in result2.fitness_history
+        ]
+
 # ===========================================================================
 # Fitness improvement
 # ===========================================================================
@@ -353,7 +635,6 @@ class TestGenerationStats:
             population_size=30,
             max_depth=2,
             generations=3,
-            semantic_dedup_enabled=True,
         )
         context = _make_context()
         evaluator = SimpleFitnessEvaluator(context)
@@ -361,6 +642,72 @@ class TestGenerationStats:
         ratios = [s.unique_semantics_ratio for s in result.fitness_history]
         assert all(0.0 < r <= 1.0 for r in ratios)
         assert any(r < 1.0 for r in ratios)
+
+
+class TestConstantOptimizationBudget:
+    """Constant-optimization budgets are enforced per generation."""
+
+    def test_constant_optimization_budget_passed_to_selector(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+        from liq.gp.evolution.engine import evolve
+
+        reg = _make_registry()
+        context = _make_context()
+        config = _make_config(
+            generations=4,
+            population_size=12,
+            constant_opt_enabled=True,
+            constant_opt_mode="probabilistic",
+            constant_opt_top_k=1.0,
+            constant_opt_max_evals=3,
+        )
+
+        select_calls: list[int | None] = []
+        optimize_calls = 0
+
+        def fake_select_for_optimization(
+            population: list[Program],
+            fitnesses: list[FitnessResult],
+            config: GPConfig,
+            rng: np.random.Generator,
+            max_evals: int | None = None,
+        ) -> list[int]:
+            effective_budget = (
+                max_evals if max_evals is not None else config.constant_opt_max_evals
+            )
+            select_calls.append(effective_budget)
+            budget = effective_budget if effective_budget is not None else len(population)
+            return list(range(min(budget, len(population))))
+
+        def fake_optimize_constants(
+            program: Program,
+            evaluator: object,
+            context: dict[str, np.ndarray],
+            config: GPConfig,
+            rng: np.random.Generator,
+        ) -> Program:
+            nonlocal optimize_calls
+            optimize_calls += 1
+            return program
+
+        import liq.gp.program.constants as constants_module
+
+        monkeypatch.setattr(
+            constants_module,
+            "select_for_optimization",
+            fake_select_for_optimization,
+        )
+        monkeypatch.setattr(
+            constants_module,
+            "optimize_constants",
+            fake_optimize_constants,
+        )
+
+        # Keep evaluator simple but valid for optimization/selection
+        evaluator = SimpleFitnessEvaluator(context)
+        evolve(reg, config, evaluator, context)
+
+        assert select_calls == [3, 3, 3, 3]
+        assert optimize_calls == 12
 
 
 # ===========================================================================
