@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from liq.gp.config import FitnessConfig, GPConfig, SeedInjectionConfig
+from liq.gp.config import FitnessConfig, GPConfig, SchedulerConfig, SeedInjectionConfig
 from liq.gp.errors import ConfigurationError
 
 
@@ -36,8 +36,16 @@ class TestGPConfigDefaults:
         assert cfg.constant_opt_max_evals is None
         assert cfg.constant_opt_max_iter == 50
         assert cfg.constant_opt_max_time_seconds == 1.0
+        assert cfg.constant_opt_role_schedule.gate_eval_interval == 1
+        assert cfg.constant_opt_role_schedule.expert_eval_interval == 1
+        assert cfg.constant_opt_role_schedule.risk_eval_interval == 1
+        assert cfg.constant_opt_role_schedule.other_eval_interval == 1
+        assert cfg.constant_opt_role_bounds.gate_threshold == (0.0, 1.0)
+        assert cfg.constant_opt_role_bounds.gate_slope == (0.1, 20.0)
+        assert cfg.constant_opt_role_bounds.expert_weight == (0.0, 10.0)
+        assert cfg.constant_opt_role_bounds.risk_scale == (0.0, 3.0)
+        assert cfg.constant_opt_role_bounds.enable_unbounded_for_unknown is True
         assert cfg.simplification_enabled is True
-        assert cfg.semantic_dedup_enabled is True
         assert cfg.semantic_ref_size == 50
         assert cfg.semantic_precision == 6
         assert cfg.early_stop_patience is None
@@ -48,6 +56,14 @@ class TestGPConfigDefaults:
         assert cfg.lexicase_epsilon_strategy == "mad"
         assert cfg.lexicase_epsilon_percentile == 50.0
         assert cfg.lexicase_nan_penalty == 1e6
+        assert cfg.scheduler.enabled is False
+        assert cfg.scheduler.max_in_flight == 4
+        assert cfg.scheduler.queue_capacity == 16
+        assert cfg.scheduler.eval_batch_size == 32
+        assert cfg.scheduler.eval_timeout_seconds == 30.0
+        assert cfg.scheduler.memory_budget_mb == 2048
+        assert cfg.scheduler.max_cpu_workers == 1
+        assert cfg.scheduler.safe_fallback_mode == "sequential"
 
     def test_frozen(self) -> None:
         cfg = GPConfig()
@@ -155,6 +171,40 @@ class TestGPConfigValidation:
         with pytest.raises(ConfigurationError, match="constant_opt_max_evals"):
             GPConfig(constant_opt_max_evals=0)
 
+    def test_constant_opt_role_schedule_intervals_validated(self) -> None:
+        with pytest.raises(ConfigurationError, match="constant_opt_gate_interval"):
+            GPConfig(constant_opt_role_schedule={"gate_eval_interval": 0})
+        with pytest.raises(ConfigurationError, match="constant_opt_expert_interval"):
+            GPConfig(
+                constant_opt_role_schedule={"gate_eval_interval": 1, "expert_eval_interval": 0}
+            )
+        with pytest.raises(ConfigurationError, match="constant_opt_risk_interval"):
+            GPConfig(
+                constant_opt_role_schedule={"gate_eval_interval": 1, "risk_eval_interval": 0}
+            )
+        with pytest.raises(ConfigurationError, match="constant_opt_other_interval"):
+            GPConfig(
+                constant_opt_role_schedule={"gate_eval_interval": 1, "other_eval_interval": 0}
+            )
+
+    def test_constant_opt_role_bounds_enable_unbounded_flag(self) -> None:
+        cfg = GPConfig(
+            constant_opt_role_bounds={
+                "enable_unbounded_for_unknown": False,
+                "gate_threshold": (0.0, 1.0),
+                "gate_slope": (0.1, 3.0),
+                "expert_weight": (0.0, 10.0),
+                "risk_scale": (0.0, 3.0),
+            },
+        )
+        assert cfg.constant_opt_role_bounds.enable_unbounded_for_unknown is False
+
+    def test_constant_opt_role_bounds_order_validated(self) -> None:
+        with pytest.raises(ConfigurationError, match="low < high"):
+            GPConfig(
+                constant_opt_role_bounds={"gate_threshold": (1.0, 0.0)},
+            )
+
     def test_constant_opt_max_evals_valid(self) -> None:
         cfg = GPConfig(constant_opt_max_evals=5)
         assert cfg.constant_opt_max_evals == 5
@@ -240,6 +290,20 @@ class TestGPConfigValidation:
     def test_max_size_zero_rejected(self) -> None:
         with pytest.raises(ConfigurationError, match="max_size"):
             GPConfig(max_size=0)
+
+    def test_scheduler_validation(self) -> None:
+        with pytest.raises(ConfigurationError, match="scheduler.max_in_flight"):
+            SchedulerConfig(max_in_flight=0)
+        with pytest.raises(ConfigurationError, match="scheduler.queue_capacity"):
+            SchedulerConfig(max_in_flight=2, queue_capacity=1)
+        with pytest.raises(ConfigurationError, match="scheduler.eval_batch_size"):
+            SchedulerConfig(eval_batch_size=0)
+        with pytest.raises(ConfigurationError, match="scheduler.eval_timeout_seconds"):
+            SchedulerConfig(eval_timeout_seconds=0.0)
+        with pytest.raises(ConfigurationError, match="scheduler.memory_budget_mb"):
+            SchedulerConfig(memory_budget_mb=64)
+        with pytest.raises(ConfigurationError, match="scheduler.max_cpu_workers"):
+            SchedulerConfig(max_cpu_workers=0)
 
 
 class TestSeedInjectionConfigValidation:

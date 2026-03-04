@@ -101,11 +101,11 @@ def on_gen(stats: GenerationStats) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Phase 1: Cold start (random initialization)
+# 4. Stage 1: Cold start (random initialization)
 # ---------------------------------------------------------------------------
 
 print("=" * 60)
-print("Phase 1: Cold start (random initialization)")
+print("Stage 1: Cold start (random initialization)")
 print("=" * 60)
 
 config1 = GPConfig(
@@ -123,12 +123,12 @@ fit1 = result1.fitness_history[-1].best_fitness[0]
 print(f"\nCold start result: fitness={fit1:.6f}, size={best1.size} nodes")
 
 # ---------------------------------------------------------------------------
-# 5. Phase 2: Warm start from best_program
+# 5. Warm start from best_program
 # ---------------------------------------------------------------------------
 
 print()
 print("=" * 60)
-print("Phase 2: Warm start from best_program")
+print("Warm start from best_program")
 print("=" * 60)
 
 config2 = GPConfig(
@@ -151,14 +151,14 @@ print(f"\nWarm start (best) result: fitness={fit2:.6f}, size={best2.size} nodes"
 print(f"Improvement over cold start: {fit2 - fit1:.6f}")
 
 # ---------------------------------------------------------------------------
-# 6. Phase 3: Warm start from Pareto front
+# 6. Stage 3: Warm start from Pareto front
 # ---------------------------------------------------------------------------
 
 print()
 print("=" * 60)
-print("Phase 3: Warm start from Pareto front")
+print("Stage 3: Warm start from Pareto front")
 print("=" * 60)
-print(f"Seeding with {len(result1.pareto_front)} programs from Phase 1 Pareto front")
+print(f"Seeding with {len(result1.pareto_front)} programs from Stage 1 Pareto front")
 
 config3 = GPConfig(
     population_size=200,
@@ -179,12 +179,12 @@ fit3 = result3.fitness_history[-1].best_fitness[0]
 print(f"\nWarm start (Pareto) result: fitness={fit3:.6f}, size={best3.size} nodes")
 
 # ---------------------------------------------------------------------------
-# 7. Phase 4: Manual seed — inject a hand-crafted program
+# 7. Stage 4: Manual seed — inject a hand-crafted program
 # ---------------------------------------------------------------------------
 
 print()
 print("=" * 60)
-print("Phase 4: Manual seed (hand-crafted program)")
+print("Stage 4: Manual seed (hand-crafted program)")
 print("=" * 60)
 
 # Build x + 1 manually: add(x, 1.0)
@@ -217,15 +217,15 @@ fit4 = result4.fitness_history[-1].best_fitness[0]
 print(f"\nManual seed result: fitness={fit4:.6f}, size={best4.size} nodes")
 
 # ---------------------------------------------------------------------------
-# 8. Phase 5: Serialize, deserialize, and resume
+# 8. Stage 5: Serialize, deserialize, and resume
 # ---------------------------------------------------------------------------
 
 print()
 print("=" * 60)
-print("Phase 5: Serialize -> Deserialize -> Resume")
+print("Stage 5: Serialize -> Deserialize -> Resume")
 print("=" * 60)
 
-# Serialize the best program from Phase 1
+# Serialize the best program from Stage 1
 data = serialize(result1.best_program)
 print(f"Serialized best program to dict (schema_version={data['schema_version']})")
 
@@ -260,8 +260,8 @@ print()
 print("=" * 60)
 print("Summary")
 print("=" * 60)
-print(f"  Phase 1 (cold start):       fitness={fit1:.6f}  size={best1.size}")
-print(f"  Phase 2 (warm from best):   fitness={fit2:.6f}  size={best2.size}")
-print(f"  Phase 3 (warm from Pareto): fitness={fit3:.6f}  size={best3.size}")
-print(f"  Phase 4 (manual seed):      fitness={fit4:.6f}  size={best4.size}")
-print(f"  Phase 5 (deserialized):     fitness={fit5:.6f}  size={best5.size}")
+print(f"  Stage 1 (cold start):       fitness={fit1:.6f}  size={best1.size}")
+print(f"  Warm from best:             fitness={fit2:.6f}  size={best2.size}")
+print(f"  Stage 3 (warm from Pareto): fitness={fit3:.6f}  size={best3.size}")
+print(f"  Stage 4 (manual seed):      fitness={fit4:.6f}  size={best4.size}")
+print(f"  Stage 5 (deserialized):     fitness={fit5:.6f}  size={best5.size}")

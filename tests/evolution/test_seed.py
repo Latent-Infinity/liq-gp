@@ -434,7 +434,6 @@ def _make_evolve_config(**overrides: object) -> GPConfig:
         "seed": 42,
         "constant_opt_enabled": False,
         "simplification_enabled": False,
-        "semantic_dedup_enabled": False,
         "elitism_count": 2,
         "tournament_size": 3,
     }
@@ -613,7 +612,6 @@ class TestEvolveWithSeeds:
             population_size=10,
             generations=1,
             constant_opt_enabled=True,
-            semantic_dedup_enabled=True,
             simplification_enabled=False,
         )
         context = _make_context()
@@ -707,7 +705,7 @@ class TestEvolveWithSeeds:
 
     def test_evolve_with_seeds_and_semantic_dedup(self) -> None:
         reg = _make_registry()
-        config = _make_evolve_config(semantic_dedup_enabled=True)
+        config = _make_evolve_config()
         ctx = _make_context()
         seed = _make_simple_tree(reg)
         result = evolve(

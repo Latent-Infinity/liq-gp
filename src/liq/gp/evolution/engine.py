@@ -7,14 +7,17 @@ deduplication, and statistics tracking.
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from inspect import signature
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+import logging
+import time
 from typing import Literal, cast
 
 import numpy as np
 
-from liq.gp.config import FitnessConfig, GPConfig
+from liq.gp.config import FitnessConfig, GPConfig, SchedulerConfig
 from liq.gp.errors import EvolutionError
 from liq.gp.evolution.constraints import apply_parsimony, enforce_constraints
 from liq.gp.evolution.diversity import (
@@ -24,6 +27,7 @@ from liq.gp.evolution.diversity import (
 from liq.gp.evolution.init import initialize_population
 from liq.gp.evolution.operators import (
     hoist_mutation,
+    module_preserving_crossover,
     parameter_mutation,
     point_mutation,
     select_operator,
@@ -46,6 +50,8 @@ from liq.gp.types import (
     ParentSourceFn,
     SelectionContext,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def evolve(
@@ -147,7 +153,9 @@ def evolve(
             population,
             evaluator,
             eval_context,
+            config,
         )
+        fitnesses, scheduler_metrics = fitnesses
 
         # --- Apply parsimony pressure ---
         fitnesses = apply_parsimony(fitnesses, population, config)
@@ -179,6 +187,7 @@ def evolve(
             unique_semantics_ratio=_compute_unique_semantics_ratio_from_fingerprints(
                 fingerprints
             ),
+            scheduler_metrics=scheduler_metrics,
         )
 
         # --- Early stopping (deferred break) ---
@@ -244,14 +253,24 @@ def evolve(
                 p1 = parents[pi % len(parents)]
                 p2 = parents[(pi + 1) % len(parents)]
                 pi += 2
-                child1, child2 = subtree_crossover(
-                    p1,
-                    p2,
-                    registry,
-                    config.max_depth,
-                    rng,
-                    max_attempts=config.max_crossover_attempts,
-                )
+                if config.crossover_mode == "module_preserving":
+                    child1, child2 = module_preserving_crossover(
+                        p1,
+                        p2,
+                        registry,
+                        config.max_depth,
+                        rng,
+                        max_attempts=config.max_crossover_attempts,
+                    )
+                else:
+                    child1, child2 = subtree_crossover(
+                        p1,
+                        p2,
+                        registry,
+                        config.max_depth,
+                        rng,
+                        max_attempts=config.max_crossover_attempts,
+                    )
                 for child in (child1, child2):
                     if enforce_constraints(child, config):
                         offspring.append(child)
@@ -308,33 +327,24 @@ def evolve(
                 population,
                 evaluator,
                 context,
+                config,
             )
+            fitnesses, _ = fitnesses
             select_for_optimization_sig = signature(select_for_optimization)
+            select_kwargs = {}
+            if "generation" in select_for_optimization_sig.parameters:
+                select_kwargs["generation"] = gen
+            if "rng" in select_for_optimization_sig.parameters:
+                select_kwargs["rng"] = rng
             if "max_evals" in select_for_optimization_sig.parameters:
-                if "rng" in select_for_optimization_sig.parameters:
-                    indices = select_for_optimization(
-                        population,
-                        fitnesses,
-                        config,
-                        rng,
-                        max_evals=constant_opt_budget,
-                    )
-                else:
-                    indices = select_for_optimization(
-                        population,
-                        fitnesses,
-                        config,
-                        max_evals=constant_opt_budget,
-                    )
-            elif "rng" in select_for_optimization_sig.parameters:
-                indices = select_for_optimization(
-                    population,
-                    fitnesses,
-                    config,
-                    rng,
-                )
-            else:
-                indices = select_for_optimization(population, fitnesses, config)
+                select_kwargs["max_evals"] = constant_opt_budget
+
+            indices = select_for_optimization(
+                population,
+                fitnesses,
+                config,
+                **select_kwargs,
+            )
             for idx in indices:
                 population[idx] = optimize_constants(
                     population[idx],
@@ -343,7 +353,7 @@ def evolve(
                     config,
                     rng,
                 )
-            if indices and config.semantic_dedup_enabled:
+            if indices:
                 fingerprints = _compute_semantic_fingerprints(
                     population,
                     ref_context,
@@ -364,7 +374,9 @@ def evolve(
                 population,
                 evaluator,
                 context,
+                config,
             )
+            fitnesses, _ = fitnesses
             # Recompute NSGA-II rankings for the new population
             inj_ranks: list[int] | None = None
             inj_crowding: list[float] | None = None
@@ -387,7 +399,7 @@ def evolve(
             if injected_count > 0:
                 injection_event_counter += 1
             # Recompute fingerprints if injection changed the population
-            if injected_count > 0 and config.semantic_dedup_enabled:
+            if injected_count > 0:
                 fingerprints = _compute_semantic_fingerprints(
                     population,
                     ref_context,
@@ -420,7 +432,9 @@ def evolve(
         population,
         evaluator,
         context,
+        config,
     )
+    fitnesses, _ = fitnesses
     fitnesses = apply_parsimony(fitnesses, population, config)
 
     # Find best program (by first objective, respecting direction)
@@ -646,11 +660,170 @@ def _evaluate_population(
     population: list[Program],
     evaluator: object,
     context: dict[str, np.ndarray],
-) -> list[FitnessResult]:
+    config: GPConfig,
+) -> tuple[list[FitnessResult], dict[str, object]]:
     """Evaluate the full population via the evaluator.
 
     Parallelism is the evaluator's responsibility: liq-gp always passes
     the complete population list and context, letting the consuming library
     choose the execution strategy (threads, processes, GPU, etc.).
     """
-    return evaluator.evaluate(population, context)  # type: ignore[union-attr]
+    scheduler = config.scheduler
+    if not scheduler.enabled:
+        return (
+            evaluator.evaluate(population, context),  # type: ignore[union-attr]
+            {
+                "mode": "direct",
+                "enabled": False,
+                "peak_in_flight": 1,
+                "submitted_chunks": 1,
+                "completed_chunks": 1,
+                "saturation_reason_code": "ok",
+            },
+        )
+    return _evaluate_population_bounded(population, evaluator, context, scheduler)
+
+
+def _evaluate_population_bounded(
+    population: list[Program],
+    evaluator: object,
+    context: dict[str, np.ndarray],
+    scheduler: SchedulerConfig,
+) -> tuple[list[FitnessResult], dict[str, object]]:
+    start = time.perf_counter()
+    chunks = [
+        (idx, population[idx : idx + scheduler.eval_batch_size])
+        for idx in range(0, len(population), scheduler.eval_batch_size)
+    ]
+    context_bytes = int(sum(values.nbytes for values in context.values()))
+    memory_budget_bytes = int(scheduler.memory_budget_mb * 1024 * 1024)
+    estimated_inflight_bytes = context_bytes * max(1, min(scheduler.max_in_flight, len(chunks)))
+
+    def _sequential(reason_code: str) -> tuple[list[FitnessResult], dict[str, object]]:
+        elapsed = float(time.perf_counter() - start)
+        logger.warning(
+            "bounded_evaluator_saturation_fallback reason=%s stage=%s elapsed_seconds=%.6f",
+            reason_code,
+            "sequential_fallback",
+            elapsed,
+        )
+        return (
+            evaluator.evaluate(population, context),  # type: ignore[union-attr]
+            {
+                "mode": "sequential_fallback",
+                "enabled": True,
+                "max_in_flight": scheduler.max_in_flight,
+                "queue_capacity": scheduler.queue_capacity,
+                "eval_batch_size": scheduler.eval_batch_size,
+                "timeout_seconds": scheduler.eval_timeout_seconds,
+                "memory_budget_mb": scheduler.memory_budget_mb,
+                "peak_in_flight": 1,
+                "submitted_chunks": 1,
+                "completed_chunks": 1,
+                "saturation_reason_code": reason_code,
+                "elapsed_seconds": elapsed,
+            },
+        )
+
+    def _saturation(reason_code: str) -> tuple[list[FitnessResult], dict[str, object]]:
+        elapsed = float(time.perf_counter() - start)
+        logger.warning(
+            "bounded_evaluator_saturated reason=%s stage=%s elapsed_seconds=%.6f"
+            " queue_capacity=%s max_in_flight=%s eval_batch_size=%s"
+            " submitted_chunks=%s completed_chunks=%s context_mb=%s",
+            reason_code,
+            "bounded_scheduler",
+            elapsed,
+            scheduler.queue_capacity,
+            scheduler.max_in_flight,
+            scheduler.eval_batch_size,
+            len(chunks),
+            0,
+            float(context_bytes / (1024 * 1024)),
+        )
+        if scheduler.safe_fallback_mode == "sequential":
+            return _sequential(reason_code)
+        logger.error(
+            "bounded_evaluator_failed reason=%s stage=%s elapsed_seconds=%.6f",
+            reason_code,
+            "bounded_scheduler",
+            elapsed,
+        )
+        raise EvolutionError(reason_code)
+
+    if len(chunks) > scheduler.queue_capacity:
+        return _saturation("scheduler_queue_saturated")
+
+    if estimated_inflight_bytes > memory_budget_bytes:
+        return _saturation("scheduler_memory_saturated")
+
+    results: list[FitnessResult | None] = [None] * len(population)
+    submitted_chunks = 0
+    completed_chunks = 0
+    peak_in_flight = 0
+
+    with ThreadPoolExecutor(max_workers=scheduler.max_cpu_workers) as pool:
+        pending: dict[Future[list[FitnessResult]], tuple[int, int]] = {}
+        cursor = 0
+        while cursor < len(chunks) or pending:
+            while cursor < len(chunks) and len(pending) < scheduler.max_in_flight:
+                start_idx, batch = chunks[cursor]
+                fut = pool.submit(evaluator.evaluate, batch, context)  # type: ignore[union-attr]
+                pending[fut] = (start_idx, len(batch))
+                submitted_chunks += 1
+                cursor += 1
+                if len(pending) > peak_in_flight:
+                    peak_in_flight = len(pending)
+
+            if not pending:
+                continue
+
+            done, _ = wait(
+                list(pending.keys()),
+                timeout=scheduler.eval_timeout_seconds,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                for future in pending:
+                    future.cancel()
+                return _saturation("scheduler_timeout")
+
+            for future in done:
+                start_idx, batch_len = pending.pop(future)
+                try:
+                    batch_result = future.result()
+                except Exception:
+                    for pending_future in pending:
+                        pending_future.cancel()
+                    return _saturation("scheduler_worker_error")
+
+                if len(batch_result) != batch_len:
+                    for pending_future in pending:
+                        pending_future.cancel()
+                    return _saturation("scheduler_result_size_mismatch")
+
+                for offset, result in enumerate(batch_result):
+                    results[start_idx + offset] = result
+                completed_chunks += 1
+
+    if any(item is None for item in results):
+        return _saturation("scheduler_incomplete_results")
+
+    elapsed = float(time.perf_counter() - start)
+    finalized = cast(list[FitnessResult], results)
+    return finalized, {
+        "mode": "bounded",
+        "enabled": True,
+        "max_in_flight": scheduler.max_in_flight,
+        "queue_capacity": scheduler.queue_capacity,
+        "eval_batch_size": scheduler.eval_batch_size,
+        "timeout_seconds": scheduler.eval_timeout_seconds,
+        "memory_budget_mb": scheduler.memory_budget_mb,
+        "context_mb": float(context_bytes / (1024 * 1024)),
+        "estimated_inflight_mb": float(estimated_inflight_bytes / (1024 * 1024)),
+        "peak_in_flight": peak_in_flight,
+        "submitted_chunks": submitted_chunks,
+        "completed_chunks": completed_chunks,
+        "saturation_reason_code": "ok",
+        "elapsed_seconds": elapsed,
+    }

@@ -9,6 +9,7 @@ import pytest
 
 from liq.gp.config import FitnessConfig, GPConfig
 from liq.gp.primitives.registry import PrimitiveInfo
+from liq.gp.primitives.smooth_gates import smooth_gate
 from liq.gp.program.ast import (
     ConstantNode,
     FunctionNode,
@@ -17,12 +18,14 @@ from liq.gp.program.ast import (
     TerminalNode,
 )
 from liq.gp.program.constants import (
+    infer_constant_roles,
+    infer_program_constant_role,
     extract_constants,
     inject_constants,
     optimize_constants,
     select_for_optimization,
 )
-from liq.gp.types import FitnessResult, ParamSpec, Series
+from liq.gp.types import BoolSeries, FitnessResult, ParamSpec, Series
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -59,6 +62,174 @@ def _make_neg_info() -> PrimitiveInfo:
         input_types=(Series,),
         output_type=Series,
         callable=lambda a: -a,
+    )
+
+
+def _make_bool_terminal(name: str = "bool") -> TerminalNode:
+    return TerminalNode(name=name, output_type=BoolSeries)
+
+
+def _make_if_then_else_info() -> PrimitiveInfo:
+    return PrimitiveInfo(
+        name="if_then_else",
+        category="regime",
+        arity=3,
+        input_types=(BoolSeries, Series, Series),
+        output_type=Series,
+        callable=lambda condition, on_true, on_false: np.where(condition, on_true, on_false),
+    )
+
+
+def _make_smooth_gate_info() -> PrimitiveInfo:
+    return PrimitiveInfo(
+        name="smooth_gate",
+        category="regime",
+        arity=3,
+        input_types=(Series, Series, Series),
+        output_type=BoolSeries,
+        callable=lambda signal, threshold, slope: smooth_gate(signal, threshold, slope),
+    )
+
+
+def _make_gt_info() -> PrimitiveInfo:
+    return PrimitiveInfo(
+        name="gt",
+        category="numeric",
+        arity=2,
+        input_types=(Series, Series),
+        output_type=BoolSeries,
+        callable=lambda a, b: a > b,
+    )
+
+
+def _make_mix_role_regime_program() -> FunctionNode:
+    """Program containing all tagged constant roles.
+
+    Roles (in traversal order):
+    - risk_scale
+    - gate_threshold
+    - gate_slope
+    - expert_weight
+    """
+    ite_info = _make_if_then_else_info()
+    mul_info = _make_mul_info()
+
+    gate_condition = FunctionNode(
+        primitive=_make_smooth_gate_info(),
+        children=(
+            TerminalNode(name="gate_signal", output_type=Series),
+            ConstantNode(0.2),
+            ConstantNode(0.6),
+        ),
+    )
+
+    detector = _make_bool_terminal("detector_condition")
+    expert = FunctionNode(
+        primitive=mul_info,
+        children=(
+            TerminalNode(name="expert_input", output_type=Series),
+            ConstantNode(1.5),
+        ),
+    )
+    detected = FunctionNode(
+        primitive=ite_info,
+        children=(
+            detector,
+            expert,
+            TerminalNode(name="detector_zero", output_type=Series),
+        ),
+    )
+
+    gate_root = FunctionNode(
+        primitive=ite_info,
+        children=(
+            gate_condition,
+            detected,
+            TerminalNode(name="gate_zero", output_type=Series),
+        ),
+    )
+
+    risk = FunctionNode(
+        primitive=mul_info,
+        children=(
+            ConstantNode(0.5),
+            TerminalNode(name="risk_input", output_type=Series),
+        ),
+    )
+
+    return FunctionNode(primitive=mul_info, children=(risk, gate_root))
+
+
+def _make_gate_threshold_program() -> FunctionNode:
+    return FunctionNode(
+        primitive=_make_gt_info(),
+        children=(
+            TerminalNode(name="x", output_type=Series),
+            ConstantNode(0.0),
+        ),
+    )
+
+
+def _make_expert_weight_program() -> FunctionNode:
+    """Program with a single `expert_weight`-tagged constant."""
+    ite_info = _make_if_then_else_info()
+    mul_info = _make_mul_info()
+
+    expert_term = FunctionNode(
+        primitive=mul_info,
+        children=(
+            TerminalNode(name="expert_input", output_type=Series),
+            ConstantNode(1.0),
+        ),
+    )
+    detector = _make_bool_terminal("detector")
+    detector_root = FunctionNode(
+        primitive=ite_info,
+        children=(
+            detector,
+            expert_term,
+            TerminalNode(name="detector_zero", output_type=Series),
+        ),
+    )
+    return FunctionNode(
+        primitive=ite_info,
+        children=(
+            _make_bool_terminal("gate"),
+            detector_root,
+            TerminalNode(name="fallback", output_type=Series),
+        ),
+    )
+
+
+def _make_risk_scale_program() -> FunctionNode:
+    """Program with a single `risk_scale`-tagged constant."""
+    mul_info = _make_mul_info()
+
+    gate = FunctionNode(
+        primitive=_make_if_then_else_info(),
+        children=(
+            _make_bool_terminal("gate"),
+            TerminalNode(name="detector", output_type=Series),
+            TerminalNode(name="gate_zero", output_type=Series),
+        ),
+    )
+    risk = FunctionNode(
+        primitive=mul_info,
+        children=(
+            ConstantNode(1.1),
+            TerminalNode(name="risk_input", output_type=Series),
+        ),
+    )
+    return FunctionNode(primitive=mul_info, children=(risk, gate))
+
+
+def _make_other_constant_program() -> FunctionNode:
+    return FunctionNode(
+        primitive=_make_add_info(),
+        children=(
+            TerminalNode(name="x", output_type=Series),
+            ConstantNode(2.0),
+        ),
     )
 
 
@@ -416,6 +587,122 @@ class TestOptimizeConstants:
         optimized = optimize_constants(program, evaluator, context, config, rng)
         improved = evaluator.evaluate([optimized], context)[0].objectives[0]
         assert improved <= baseline
+
+    def test_role_based_bounds_are_enforced(self) -> None:
+        """Role-aware bounds clamp optimized constants into configured intervals."""
+        signal = np.linspace(-1.0, 1.0, 30)
+        context = {"x": signal}
+
+        class TargetingEvaluator:
+            def evaluate(
+                self,
+                programs: list[Program],
+                context: dict[str, np.ndarray],
+            ) -> list[FitnessResult]:
+                del context
+                results: list[FitnessResult] = []
+                for prog in programs:
+                    threshold, slope = extract_constants(prog)
+                    score = -((threshold - 5.0) ** 2 + (slope - 6.0) ** 2)
+                    results.append(FitnessResult(objectives=(score,)))
+                return results
+
+        program = FunctionNode(
+            primitive=_make_smooth_gate_info(),
+            children=(
+                TerminalNode(name="signal", output_type=Series),
+                ConstantNode(9.0),
+                ConstantNode(9.0),
+            ),
+        )
+        evaluator = TargetingEvaluator()
+        config = GPConfig(
+            constant_opt_enabled=True,
+            constant_opt_max_iter=120,
+            constant_opt_role_bounds={
+                "gate_threshold": (0.0, 0.2),
+                "gate_slope": (0.5, 0.7),
+            },
+        )
+        rng = np.random.default_rng(7)
+
+        result = optimize_constants(program, evaluator, context, config, rng)
+        threshold, slope = extract_constants(result)
+
+        assert 0.0 <= threshold <= 0.2
+        assert 0.5 <= slope <= 0.7
+        assert threshold >= 0.19
+        assert slope >= 0.69
+
+
+# ---------------------------------------------------------------------------
+# Tests: role tagging and scheduling
+# ---------------------------------------------------------------------------
+
+
+class TestConstantRoleTagging:
+    """Role inference and precedence for role-aware optimization."""
+
+    def test_infer_roles_all_known_tags(self) -> None:
+        """Mixed-role regime program yields stable role assignment order."""
+        program = _make_mix_role_regime_program()
+        roles = infer_constant_roles(program)
+        assert roles == [
+            "risk_scale",
+            "gate_threshold",
+            "gate_slope",
+            "expert_weight",
+        ]
+
+    def test_infer_roles_is_deterministic(self) -> None:
+        """Role inference is stable for the same program."""
+        program = _make_mix_role_regime_program()
+        assert infer_constant_roles(program) == infer_constant_roles(program)
+
+    def test_dominant_role_precedence(self) -> None:
+        """`gate_threshold` takes precedence when it coexists with others."""
+        program = _make_mix_role_regime_program()
+        assert infer_program_constant_role(program) == "gate_threshold"
+
+    def test_dominant_role_defaults(self) -> None:
+        """No-role and role-missing cases default to `other`."""
+        assert infer_program_constant_role(_make_gate_threshold_program()) == "gate_threshold"
+        assert infer_program_constant_role(_make_expert_weight_program()) == "expert_weight"
+        assert infer_program_constant_role(_make_risk_scale_program()) == "risk_scale"
+        assert infer_program_constant_role(TerminalNode(name="x", output_type=Series)) == "other"
+        assert infer_program_constant_role(_make_other_constant_program()) == "other"
+
+
+class TestRoleAwareOptimizationSchedule:
+    """FR-6.4 role-aware schedule tests."""
+
+    def test_selection_respects_role_intervals_per_generation(self) -> None:
+        """Each role is selected only on its configured cadence."""
+        population = [
+            _make_gate_threshold_program(),
+            _make_expert_weight_program(),
+            _make_risk_scale_program(),
+            _make_other_constant_program(),
+        ]
+        fitnesses = [
+            FitnessResult(objectives=(float(i),))
+            for i in range(len(population))
+        ]
+        config = GPConfig(
+            constant_opt_top_k=1.0,
+            constant_opt_role_schedule={
+                "gate_eval_interval": 1,
+                "expert_eval_interval": 2,
+                "risk_eval_interval": 3,
+                "other_eval_interval": 4,
+            },
+        )
+
+        assert select_for_optimization(population, fitnesses, config, generation=0) == [0, 1, 2, 3]
+        assert select_for_optimization(population, fitnesses, config, generation=1) == [0]
+        assert select_for_optimization(population, fitnesses, config, generation=2) == [0, 1]
+        assert select_for_optimization(population, fitnesses, config, generation=3) == [0, 2]
+        assert select_for_optimization(population, fitnesses, config, generation=4) == [0, 1, 3]
 
 
 # ---------------------------------------------------------------------------

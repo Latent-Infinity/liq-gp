@@ -59,7 +59,6 @@ def _make_config(**overrides: object) -> GPConfig:
         "seed": 42,
         "constant_opt_enabled": False,
         "simplification_enabled": False,
-        "semantic_dedup_enabled": False,
         "elitism_count": 2,
         "tournament_size": 3,
     }
@@ -636,7 +635,6 @@ class TestGenerationStats:
             population_size=30,
             max_depth=2,
             generations=3,
-            semantic_dedup_enabled=True,
         )
         context = _make_context()
         evaluator = SimpleFitnessEvaluator(context)

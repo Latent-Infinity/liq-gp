@@ -92,12 +92,10 @@ def deduplicate_population(
 
     Computes a fingerprint for each program. The first occurrence of each
     unique fingerprint is kept; subsequent duplicates are replaced with
-    freshly generated random programs (via ``generate_grow``) when dedup
-    is enabled (FR-8.4).
+    freshly generated random programs (via ``generate_grow``) (FR-8.4).
 
-    The ``unique_semantics_ratio`` is always computed as the number of
-    unique fingerprints divided by the population size, regardless of
-    whether dedup is enabled (FR-8.5).
+    The ``unique_semantics_ratio`` is computed as the number of
+    unique fingerprints divided by the population size (FR-8.5).
 
     Args:
         population: Current list of programs.
@@ -111,6 +109,7 @@ def deduplicate_population(
         A tuple of (new_population, unique_semantics_ratio).
     """
     from liq.gp.evolution.init import generate_grow
+    from liq.gp.program.simplify import simplify
 
     precision = config.semantic_precision
     pop_size = len(population)
@@ -129,9 +128,6 @@ def deduplicate_population(
     unique_count = len(set(fingerprints))
     unique_ratio = unique_count / pop_size if pop_size > 0 else 1.0
 
-    if not config.semantic_dedup_enabled:
-        return list(population), unique_ratio
-
     # Replace duplicates: keep first occurrence, replace the rest
     seen: set[bytes] = set()
     new_population: list[Program] = []
@@ -144,6 +140,8 @@ def deduplicate_population(
             replacement = generate_grow(
                 registry, config.max_depth, prog.output_type, rng
             )
+            if config.simplification_enabled:
+                replacement = simplify(replacement)
             new_population.append(replacement)
 
     return new_population, unique_ratio

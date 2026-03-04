@@ -111,7 +111,6 @@ class TestEndToEndSimple:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=True,
-            semantic_dedup_enabled=False,
             elitism_count=2,
             tournament_size=3,
         )
@@ -138,7 +137,6 @@ class TestEndToEndSimple:
             seed=7,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = MSEEvaluator(lambda ctx: ctx["x"] ** 2)
@@ -154,7 +152,6 @@ class TestEndToEndSimple:
             seed=99,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = MSEEvaluator(lambda ctx: ctx["x"])
@@ -182,7 +179,6 @@ class TestEndToEndSimple:
             seed=77,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
 
@@ -210,7 +206,6 @@ class TestSimplificationIntegration:
             seed=42,
             simplification_enabled=False,
             constant_opt_enabled=False,
-            semantic_dedup_enabled=False,
         )
         config_with_simp = GPConfig(
             population_size=30,
@@ -219,7 +214,6 @@ class TestSimplificationIntegration:
             seed=42,
             simplification_enabled=True,
             constant_opt_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         target = lambda c: c["x"] + c["x"]
@@ -252,7 +246,6 @@ class TestEarlyStoppingIntegration:
             early_stop_threshold=1e10,  # Absurdly high = always stalled
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = MSEEvaluator(lambda c: c["x"])
@@ -269,7 +262,6 @@ class TestEarlyStoppingIntegration:
             early_stop_patience=None,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = MSEEvaluator(lambda c: c["x"])
@@ -292,7 +284,6 @@ class TestSemanticDedupIntegration:
             max_depth=3,
             generations=5,
             seed=42,
-            semantic_dedup_enabled=True,
             semantic_ref_size=10,
             constant_opt_enabled=False,
             simplification_enabled=False,
@@ -321,7 +312,6 @@ class TestSerializationIntegration:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = MSEEvaluator(lambda c: 2.0 * c["x"])
@@ -381,7 +371,6 @@ class TestMultiObjectiveIntegration:
             selection_mode="nsga2",
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
             fitness=FitnessConfig(
                 objectives=["accuracy", "complexity"],
                 objective_directions=["maximize", "minimize"],
@@ -421,7 +410,6 @@ class TestConstantOptIntegration:
             constant_opt_max_iter=5,
             constant_opt_max_time_seconds=1.0,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = MSEEvaluator(lambda c: 3.5 * c["x"])
@@ -447,7 +435,6 @@ class TestConfigPassthrough:
             seed=42,
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
         context = _make_context()
         evaluator = MSEEvaluator(lambda c: c["x"])

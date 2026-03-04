@@ -135,6 +135,43 @@ class TestParamSpec:
         with pytest.raises(AttributeError):
             p.name = "y"  # type: ignore[misc]
 
+    def test_discrete_allowed_values(self) -> None:
+        p = ParamSpec(
+            name="period",
+            dtype=int,
+            default=13,
+            allowed_values=[34, 2, 13, 3, 55, 21],
+        )
+        assert p.value_is_discrete()
+        assert p.allowed_values == [2, 3, 13, 21, 34, 55]
+
+    def test_discrete_defaults_sorted(self) -> None:
+        p = ParamSpec(
+            name="alpha",
+            dtype=float,
+            default=0.5,
+            allowed_values=[1.0, 0.2, 0.2, 0.5, 1.0],
+        )
+        assert p.allowed_values == [0.2, 0.5, 1.0]
+
+    def test_discrete_default_must_be_in_values(self) -> None:
+        with pytest.raises(ValueError, match="default \\(13\\) must be in allowed_values"):
+            ParamSpec(
+                name="period",
+                dtype=int,
+                default=13,
+                allowed_values=[2, 3, 5],
+            )
+
+    def test_discrete_empty_values_rejected(self) -> None:
+        with pytest.raises(ValueError, match="allowed_values must be a non-empty sequence"):
+            ParamSpec(name="period", dtype=int, default=2, allowed_values=[])
+
+    def test_discrete_min_max_optional(self) -> None:
+        p = ParamSpec(name="period", dtype=int, default=13, allowed_values=[13, 21, 34])
+        assert p.min_value is None
+        assert p.max_value is None
+
 
 class TestFitnessResult:
     """FitnessResult immutability and fields (FR-5.4.2)."""
@@ -175,6 +212,7 @@ class TestGenerationStats:
         assert stats.mean_program_size == 18.5
         assert stats.unique_semantics_ratio == 0.85
         assert stats.pareto_front_size == 10
+        assert stats.scheduler_metrics == {}
 
     def test_frozen(self) -> None:
         stats = GenerationStats(
@@ -188,6 +226,19 @@ class TestGenerationStats:
         )
         with pytest.raises(AttributeError):
             stats.generation = 1  # type: ignore[misc]
+
+    def test_scheduler_metrics_payload(self) -> None:
+        stats = GenerationStats(
+            generation=1,
+            best_fitness=(1.0,),
+            mean_fitness=(0.5,),
+            best_program_size=2,
+            mean_program_size=2.5,
+            unique_semantics_ratio=1.0,
+            pareto_front_size=1,
+            scheduler_metrics={"mode": "bounded", "peak_in_flight": 2},
+        )
+        assert stats.scheduler_metrics["mode"] == "bounded"
 
 
 class TestEvolutionResult:

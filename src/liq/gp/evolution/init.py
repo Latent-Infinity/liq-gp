@@ -74,6 +74,16 @@ def _sample_params(
     """Sample parameter values uniformly from their ranges."""
     params: dict[str, int | float] = {}
     for ps in primitive.param_specs:
+        if ps.value_is_discrete():
+            assert ps.allowed_values is not None
+            index = int(rng.integers(len(ps.allowed_values)))
+            val = ps.allowed_values[index]
+            if ps.dtype is int:
+                params[ps.name] = int(round(float(val)))
+            else:
+                params[ps.name] = float(val)
+            continue
+
         if ps.dtype is int:
             val = int(rng.integers(int(ps.min_value), int(ps.max_value) + 1))
             params[ps.name] = val
@@ -310,6 +320,7 @@ def initialize_seeded_population(
     from liq.gp.evolution.constraints import enforce_constraints
     from liq.gp.evolution.operators import (
         hoist_mutation,
+        module_preserving_crossover,
         parameter_mutation,
         point_mutation,
         select_operator,
@@ -340,14 +351,24 @@ def initialize_seeded_population(
             p1 = seeds[pi % len(seeds)]
             p2 = seeds[(pi + 1) % len(seeds)]
             pi += 2
-            child1, child2 = subtree_crossover(
-                p1,
-                p2,
-                registry,
-                config.max_depth,
-                rng,
-                max_attempts=config.max_crossover_attempts,
-            )
+            if config.crossover_mode == "module_preserving":
+                child1, child2 = module_preserving_crossover(
+                    p1,
+                    p2,
+                    registry,
+                    config.max_depth,
+                    rng,
+                    max_attempts=config.max_crossover_attempts,
+                )
+            else:
+                child1, child2 = subtree_crossover(
+                    p1,
+                    p2,
+                    registry,
+                    config.max_depth,
+                    rng,
+                    max_attempts=config.max_crossover_attempts,
+                )
             for child in (child1, child2):
                 if enforce_constraints(child, config) and len(offspring) < remaining:
                     offspring.append(child)

@@ -86,7 +86,7 @@ Each generation follows this pipeline:
 8. **Simplification** -- algebraic rewrite rules (optional)
 9. **Constant optimization** -- Nelder-Mead on top-K programs (optional)
 10. **Seed injection** -- replace worst individuals with seed-derived programs (optional)
-11. **Semantic deduplication** -- remove output-equivalent programs (optional)
+11. **Semantic deduplication** -- remove output-equivalent programs
 
 ### Parallelism
 
@@ -348,7 +348,6 @@ restored = deserialize(data, registry)     # requires registry for primitive loo
 | `constant_opt_max_iter` | 50 | Max Nelder-Mead iterations |
 | `constant_opt_max_time_seconds` | 1.0 | Wall-clock time limit per program |
 | `simplification_enabled` | True | Enable algebraic simplification |
-| `semantic_dedup_enabled` | True | Enable semantic deduplication |
 | `semantic_ref_size` | 50 | Reference dataset size for fingerprinting |
 | `semantic_precision` | 6 | Decimal places for fingerprint rounding |
 | `early_stop_patience` | None | Generations without improvement before stopping |
@@ -439,7 +438,7 @@ uv run ruff format src/ tests/        # format
 uv run ty check src/                  # type check
 ```
 
-## Operational Failure Mapping (Phase 6 hardening)
+## Operational Failure Mapping (Stage 6 hardening)
 
 - `selection_mode="lexicase"` without valid per-individual
   `METADATA_KEY_SLICE_SCORES` fails fast with `ValueError`.

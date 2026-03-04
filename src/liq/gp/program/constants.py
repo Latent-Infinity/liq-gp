@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from scipy.optimize import minimize
@@ -28,6 +28,131 @@ if TYPE_CHECKING:
     from liq.gp.types import FitnessResult
 
 logger = logging.getLogger(__name__)
+
+ConstantRole = Literal[
+    "gate_threshold",
+    "gate_slope",
+    "expert_weight",
+    "risk_scale",
+    "other",
+]
+
+_ROLE_PRIORITY: tuple[ConstantRole, ...] = (
+    "gate_threshold",
+    "gate_slope",
+    "expert_weight",
+    "risk_scale",
+    "other",
+)
+
+_GATE_PARAM_ROLE_MAP: dict[str, dict[int, ConstantRole]] = {
+    "smooth_gate": {1: "gate_threshold", 2: "gate_slope"},
+    "softmax_gate": {2: "gate_slope"},
+    "hysteresis_gate": {1: "gate_threshold", 2: "gate_slope"},
+    "cooldown_gate": {1: "gate_threshold", 2: "gate_slope"},
+    "logistic_gate": {1: "gate_threshold", 2: "gate_slope"},
+}
+
+
+def infer_constant_roles(program: Program) -> list[ConstantRole]:
+    """Infer per-constant roles for role-aware optimization.
+
+    The role tags are returned in the same order as ``extract_constants``. Known
+    tags are:
+
+    - ``gate_threshold``
+    - ``gate_slope``
+    - ``expert_weight``
+    - ``risk_scale``
+    - ``other`` (default fallback)
+    """
+    from liq.gp.evolution.operators import _collect_regime_block_roles
+
+    regime_roles = _collect_regime_block_roles(program)
+    roles: list[ConstantRole] = []
+
+    def _walk(
+        node: Program,
+        parent: Program | None = None,
+        child_index: int | None = None,
+    ) -> None:
+        if isinstance(node, ConstantNode):
+            roles.append(_infer_constant_role(node, parent, child_index, regime_roles))
+            return
+        if isinstance(node, (FunctionNode, ParameterizedNode)):
+            for index, child in enumerate(node.children):
+                _walk(child, node, index)
+
+    _walk(program)
+    return roles
+
+
+def infer_program_constant_role(program: Program) -> ConstantRole:
+    """Return the dominant role of all constants in ``program``."""
+    roles = infer_constant_roles(program)
+    if not roles:
+        return "other"
+    for role in _ROLE_PRIORITY:
+        if role in roles:
+            return role
+    return "other"
+
+
+def _infer_constant_role(
+    node: ConstantNode,
+    parent: Program | None,
+    child_index: int | None,
+    regime_roles: dict[int, str],
+) -> ConstantRole:
+    if parent is None or child_index is None:
+        return "other"
+
+    if isinstance(parent, (FunctionNode, ParameterizedNode)):
+        explicit = _GATE_PARAM_ROLE_MAP.get(parent.primitive.name, {}).get(
+            child_index,
+        )
+        if explicit is not None:
+            return explicit
+
+        if regime_roles.get(id(parent)) in {"risk", "risk_scale"}:
+            return "risk_scale"
+
+        if parent.primitive.name == "mul" and len(parent.children) == 2:
+            sibling = parent.children[1 - child_index]
+            sibling_role = regime_roles.get(id(sibling))
+
+            if sibling_role == "risk":
+                return "risk_scale"
+
+            if sibling_role is not None and sibling_role.startswith("expert"):
+                return "expert_weight"
+
+    if (
+        isinstance(parent, (FunctionNode, ParameterizedNode))
+        and regime_roles.get(id(node)) in {"risk", "risk_scale"}
+    ):
+        return "risk_scale"
+
+    if id(node) in regime_roles:
+        mapped_role = regime_roles[id(node)]
+        if mapped_role == "risk":
+            return "risk_scale"
+        if mapped_role.startswith("expert"):
+            return "expert_weight"
+        if mapped_role == "gate":
+            return "gate_threshold"
+        if mapped_role == "detector":
+            return "gate_threshold"
+
+    if isinstance(node, ConstantNode) and parent.primitive.name in {
+        "gt",
+        "ge",
+        "lt",
+        "le",
+    }:
+        return "gate_threshold"
+
+    return "other"
 
 
 # ---------------------------------------------------------------------------
@@ -110,10 +235,14 @@ def optimize_constants(
         return program
 
     try:
-        optimized = _run_optimization(
-            program, evaluator, context, config, rng, current_constants
+        return _run_optimization(
+            program,
+            evaluator,
+            context,
+            config,
+            rng,
+            current_constants,
         )
-        return optimized
     except Exception:
         logger.warning(
             "Constant optimization failed; keeping original constants",
@@ -128,6 +257,7 @@ def select_for_optimization(
     config: GPConfig,
     rng: np.random.Generator | None = None,
     max_evals: int | None = None,
+    generation: int | None = None,
 ) -> list[int]:
     """Return sorted indices of programs eligible for constant optimization.
 
@@ -154,10 +284,16 @@ def select_for_optimization(
         return []
 
     # Filter to programs that have at least one constant
-    eligible: list[tuple[int, float]] = []
+    eligible: list[tuple[int, float, ConstantRole]] = []
     for i, (prog, fit) in enumerate(zip(population, fitnesses, strict=True)):
         if extract_constants(prog):
-            eligible.append((i, fit.objectives[0]))
+            role = infer_program_constant_role(prog)
+            if _is_role_allowed_this_generation(
+                role,
+                generation,
+                config,
+            ):
+                eligible.append((i, fit.objectives[0], role))
 
     if not eligible:
         return []
@@ -170,7 +306,7 @@ def select_for_optimization(
         k = max(1, int(len(eligible) * config.constant_opt_top_k))
         if max_evals is not None:
             k = min(k, max_evals)
-        selected_indices = [idx for idx, _fit in eligible[:k]]
+        selected_indices = [idx for idx, _fit, _role in eligible[:k]]
     else:
         # Rank-proportional sampling (probabilistic mode).
         # Best individuals receive higher selection probability.
@@ -208,6 +344,62 @@ def select_for_optimization(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_role_allowed_this_generation(
+    role: ConstantRole,
+    generation: int | None,
+    config: GPConfig,
+) -> bool:
+    if generation is None:
+        return True
+
+    schedule = config.constant_opt_role_schedule
+    interval = {
+        "gate_threshold": schedule.gate_eval_interval,
+        "gate_slope": schedule.gate_eval_interval,
+        "expert_weight": schedule.expert_eval_interval,
+        "risk_scale": schedule.risk_eval_interval,
+        "other": schedule.other_eval_interval,
+    }[role]
+
+    return generation % interval == 0
+
+
+def _constant_bounds_for_role(
+    role: ConstantRole,
+    config: GPConfig,
+) -> tuple[float | None, float | None]:
+    bounds_cfg = config.constant_opt_role_bounds
+    if role == "gate_threshold":
+        return bounds_cfg.gate_threshold
+    if role == "gate_slope":
+        return bounds_cfg.gate_slope
+    if role == "expert_weight":
+        return bounds_cfg.expert_weight
+    if role == "risk_scale":
+        return bounds_cfg.risk_scale
+    return (None, None)
+
+
+def _collect_constant_bounds(
+    roles: list[ConstantRole],
+    config: GPConfig,
+) -> list[tuple[float | None, float | None]]:
+    return [_constant_bounds_for_role(role, config) for role in roles]
+
+
+def _coerce_initial_constants_with_bounds(
+    x0: np.ndarray,
+    bounds: list[tuple[float | None, float | None]],
+) -> np.ndarray:
+    bounded = x0.astype(np.float64, copy=True)
+    for index, (lower, upper) in enumerate(bounds):
+        if lower is not None:
+            bounded[index] = max(lower, bounded[index])
+        if upper is not None:
+            bounded[index] = min(upper, bounded[index])
+    return bounded
 
 
 def _inject_recursive(
@@ -253,11 +445,21 @@ def _run_optimization(
     initial_constants: list[float],
 ) -> Program:
     """Run scipy optimization with deterministic time/iteration limits."""
+    roles = infer_constant_roles(program)
+    if len(roles) != len(initial_constants):
+        raise ValueError(
+            f"Constant role mismatch: got {len(initial_constants)} "
+            f"constants but inferred {len(roles)} roles"
+        )
+
     x0 = np.array(initial_constants, dtype=np.float64)
+    bounds = _collect_constant_bounds(roles, config)
+    x0 = _coerce_initial_constants_with_bounds(x0, bounds)
 
     # Add small deterministic perturbation to break symmetry
     perturbation = rng.uniform(-0.01, 0.01, size=len(x0))
     x0 = x0 + perturbation
+    x0 = _coerce_initial_constants_with_bounds(x0, bounds)
 
     start_time = time.monotonic()
     max_time = config.constant_opt_max_time_seconds
@@ -307,7 +509,7 @@ def _run_optimization(
             time_callback,
             max_iter=config.constant_opt_max_iter,
             method="L-BFGS-B",
-            bounds=[(None, None)] * len(x0),
+            bounds=bounds,
             best_x=best_x,
         )
     except _TimeLimitReached:

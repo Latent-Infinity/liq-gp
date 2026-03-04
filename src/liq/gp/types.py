@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -125,18 +126,89 @@ class ParamSpec:
     name: str
     dtype: type  # int or float
     default: int | float
-    min_value: int | float
-    max_value: int | float
+    min_value: int | float | None = None
+    max_value: int | float | None = None
+    allowed_values: list[int | float] | None = None
 
     def __post_init__(self) -> None:
         if self.dtype not in (int, float):
             msg = f"dtype must be int or float, got {self.dtype}"
             raise TypeError(msg)
+        if self.allowed_values is not None:
+            cleaned = self._normalize_allowed_values(self.allowed_values)
+            object.__setattr__(self, "allowed_values", cleaned)
+            if self.dtype is int and any(type(value) is not int for value in cleaned):
+                raise TypeError("all allowed_values must be int when dtype is int")
+            if self.dtype is float and any(
+                not isinstance(value, (int, float)) or isinstance(value, bool)
+                for value in cleaned
+            ):
+                raise TypeError(
+                    "allowed_values must be int or float values when dtype is float"
+                )
+            if self.dtype is float and not all(isinstance(v, (int, float)) for v in cleaned):
+                raise TypeError("allowed_values must be numeric when dtype is float")
+            if self.default not in cleaned:
+                msg = f"default ({self.default}) must be in allowed_values"
+                raise ValueError(msg)
+            return
+
+        if self.min_value is None or self.max_value is None:
+            raise ValueError("min_value and max_value are required when allowed_values is None")
+        if self.dtype is int and not isinstance(self.min_value, int):
+            raise TypeError("min_value must be int when dtype is int")
+        if self.dtype is int and isinstance(self.min_value, bool):
+            raise TypeError("min_value must be int, not bool")
+        if self.dtype is float and isinstance(self.min_value, bool):
+            raise TypeError("min_value must be int or float, not bool")
+        if self.dtype is int and not isinstance(self.max_value, int):
+            raise TypeError("max_value must be int when dtype is int")
+        if self.dtype is int and isinstance(self.max_value, bool):
+            raise TypeError("max_value must be int, not bool")
+        if self.dtype is float and isinstance(self.max_value, bool):
+            raise TypeError("max_value must be int or float, not bool")
+        if not isinstance(self.min_value, (int, float)):
+            raise TypeError("min_value must be int or float")
+        if not isinstance(self.max_value, (int, float)):
+            raise TypeError("max_value must be int or float")
         if self.min_value > self.max_value:
             msg = (
                 f"min_value ({self.min_value}) must be <= max_value ({self.max_value})"
             )
             raise ValueError(msg)
+        if not math.isfinite(self.min_value) or not math.isfinite(self.max_value):
+            raise ValueError("min_value and max_value must be finite")
+        if self.dtype is int and not (isinstance(self.default, int) and not isinstance(self.default, bool)):
+            raise TypeError("default must be int when dtype is int")
+        if self.dtype is float and (not isinstance(self.default, (int, float)) or isinstance(self.default, bool)):
+            raise TypeError("default must be int or float when dtype is float")
+        if not self.min_value <= self.default <= self.max_value:
+            msg = (
+                f"default ({self.default}) must be within [{self.min_value}, {self.max_value}]"
+            )
+            raise ValueError(msg)
+
+    @staticmethod
+    def _normalize_allowed_values(values: list[int | float]) -> list[int | float]:
+        """Normalize allowed values:
+
+        - remove duplicates
+        - sort ascending
+        - enforce finiteness
+        """
+        if not values:
+            raise ValueError("allowed_values must be a non-empty sequence")
+        cleaned = sorted(set(values))
+        if any(not isinstance(value, (int, float)) for value in cleaned):
+            raise TypeError("allowed_values must contain only int/float values")
+        if any(isinstance(value, bool) for value in cleaned):
+            raise TypeError("allowed_values must not contain bool values")
+        if any(not math.isfinite(float(value)) for value in cleaned):
+            raise ValueError("allowed_values must be finite")
+        return cleaned
+
+    def value_is_discrete(self) -> bool:
+        return self.allowed_values is not None
 
 
 @dataclass(frozen=True)
@@ -193,12 +265,14 @@ class GenerationStats:
         best_program_size: Node count of the best individual.
         mean_program_size: Mean node count across the population.
         unique_semantics_ratio: Fraction of semantically unique individuals
-            (0.0-1.0); computed via fingerprinting when semantic dedup is on.
+            (0.0-1.0); computed via semantic fingerprinting.
         pareto_front_size: Number of individuals on the first Pareto front
             (meaningful in multi-objective mode).
         injected_count: Number of programs injected this generation via
             periodic seed injection (0 when injection is disabled or not
             triggered).
+        scheduler_metrics: Optional bounded-scheduler metrics for this
+            generation's primary evaluation pass.
     """
 
     generation: int
@@ -209,6 +283,7 @@ class GenerationStats:
     unique_semantics_ratio: float
     pareto_front_size: int
     injected_count: int = 0
+    scheduler_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

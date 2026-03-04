@@ -99,7 +99,6 @@ class TestSymbolicRegressionExample:
             hoist_mutation_rate=0.1,
             constant_opt_enabled=True,
             simplification_enabled=True,
-            semantic_dedup_enabled=True,
         )
 
         result = evolve(
@@ -328,7 +327,6 @@ class TestMultiObjectiveExample:
             parsimony_mode="pareto",
             constant_opt_enabled=True,
             simplification_enabled=True,
-            semantic_dedup_enabled=True,
             fitness=fitness_config,
         )
 

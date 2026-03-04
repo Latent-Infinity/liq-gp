@@ -81,6 +81,111 @@ class SeedInjectionConfig(BaseModel, frozen=True):
         return self
 
 
+class ConstantRoleOptimizationBounds(BaseModel, frozen=True):
+    """Bounds used for role-based constant optimization.
+
+    These bounds are applied per-constant before constant optimization and are
+    passed directly into bounded optimizers (currently L-BFGS-B).
+    """
+
+    gate_threshold: tuple[float, float] = (0.0, 1.0)
+    gate_slope: tuple[float, float] = (0.1, 20.0)
+    expert_weight: tuple[float, float] = (0.0, 10.0)
+    risk_scale: tuple[float, float] = (0.0, 3.0)
+    enable_unbounded_for_unknown: bool = True
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        for name, bounds in {
+            "gate_threshold": self.gate_threshold,
+            "gate_slope": self.gate_slope,
+            "expert_weight": self.expert_weight,
+            "risk_scale": self.risk_scale,
+        }.items():
+            if len(bounds) != 2:
+                raise ConfigurationError(
+                    f"constant_opt_role_bounds.{name} must be a pair"
+                )
+            low, high = bounds
+            if not math.isfinite(low) or not math.isfinite(high):
+                raise ConfigurationError(
+                    f"constant_opt_role_bounds.{name} values must be finite"
+                )
+            if low >= high:
+                raise ConfigurationError(
+                    f"constant_opt_role_bounds.{name} must satisfy low < high"
+                )
+        return self
+
+
+class ConstantRoleOptimizationSchedule(BaseModel, frozen=True):
+    """Role-aware schedule for constant-parameter optimization."""
+
+    gate_eval_interval: int = 1
+    expert_eval_interval: int = 1
+    risk_eval_interval: int = 1
+    other_eval_interval: int = 1
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        for name, value in {
+            "constant_opt_gate_interval": self.gate_eval_interval,
+            "constant_opt_expert_interval": self.expert_eval_interval,
+            "constant_opt_risk_interval": self.risk_eval_interval,
+            "constant_opt_other_interval": self.other_eval_interval,
+        }.items():
+            if value < 1:
+                raise ConfigurationError(f"{name} must be >= 1")
+        return self
+
+
+class SchedulerConfig(BaseModel, frozen=True):
+    """Configuration for bounded, budget-aware population evaluation.
+
+    Attributes:
+        enabled: When true, liq-gp evaluates in bounded chunks with scheduler
+            limits and explicit saturation handling.
+        max_in_flight: Maximum number of active evaluation jobs.
+        queue_capacity: Maximum number of queued jobs per population evaluation.
+        eval_batch_size: Programs per scheduled evaluation job.
+        eval_timeout_seconds: Timeout for job completion waits.
+        memory_budget_mb: Soft budget used for bounded in-flight memory checks.
+        max_cpu_workers: Upper bound for scheduler worker threads.
+        safe_fallback_mode: Saturation handling policy:
+            - ``"sequential"``: degrade to sequential evaluation.
+            - ``"fail"``: raise an explicit scheduler saturation error.
+    """
+
+    enabled: bool = False
+    max_in_flight: int = 4
+    queue_capacity: int = 16
+    eval_batch_size: int = 32
+    eval_timeout_seconds: float = 30.0
+    memory_budget_mb: int = 2048
+    max_cpu_workers: int = 1
+    safe_fallback_mode: Literal["sequential", "fail"] = "sequential"
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        if self.max_in_flight < 1:
+            raise ConfigurationError("scheduler.max_in_flight must be >= 1")
+        if self.queue_capacity < self.max_in_flight:
+            raise ConfigurationError(
+                "scheduler.queue_capacity must be >= scheduler.max_in_flight"
+            )
+        if self.eval_batch_size < 1:
+            raise ConfigurationError("scheduler.eval_batch_size must be >= 1")
+        if not math.isfinite(self.eval_timeout_seconds) or self.eval_timeout_seconds <= 0.0:
+            raise ConfigurationError(
+                "scheduler.eval_timeout_seconds must be finite and > 0"
+            )
+        if self.memory_budget_mb < 128:
+            raise ConfigurationError("scheduler.memory_budget_mb must be >= 128")
+        if self.max_cpu_workers < 1:
+            raise ConfigurationError("scheduler.max_cpu_workers must be >= 1")
+        return self
+
+
 class GPConfig(BaseModel, frozen=True):
     """Main configuration for the GP engine.
 
@@ -106,6 +211,7 @@ class GPConfig(BaseModel, frozen=True):
     parameter_mutation_rate: float = 0.05
     hoist_mutation_rate: float = 0.05
     max_crossover_attempts: int = 20
+    crossover_mode: Literal["standard", "module_preserving"] = "standard"
 
     # Selection
     tournament_size: int = 5
@@ -133,12 +239,17 @@ class GPConfig(BaseModel, frozen=True):
     constant_opt_max_evals: int | None = None
     constant_opt_max_iter: int = 50
     constant_opt_max_time_seconds: float = 1.0
+    constant_opt_role_schedule: ConstantRoleOptimizationSchedule = (
+        ConstantRoleOptimizationSchedule()
+    )
+    constant_opt_role_bounds: ConstantRoleOptimizationBounds = (
+        ConstantRoleOptimizationBounds()
+    )
 
     # Simplification
     simplification_enabled: bool = True
 
-    # Semantic dedup
-    semantic_dedup_enabled: bool = True
+    # Semantic dedup (always enabled)
     semantic_ref_size: int = 50
     semantic_precision: int = 6
 
@@ -151,6 +262,7 @@ class GPConfig(BaseModel, frozen=True):
 
     # Fitness config
     fitness: FitnessConfig = FitnessConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
 
     @model_validator(mode="after")
     def _validate_all(self) -> Self:

@@ -109,7 +109,6 @@ def _base_config(**overrides) -> GPConfig:
         "seed": 42,
         "constant_opt_enabled": False,
         "simplification_enabled": False,
-        "semantic_dedup_enabled": False,
         "elitism_count": 2,
         "tournament_size": 3,
     }
@@ -320,9 +319,9 @@ class TestEvolveReproducibility:
             assert stats_a.best_fitness == stats_b.best_fitness
 
     def test_with_semantic_dedup_deterministic(self) -> None:
-        """Determinism holds when semantic deduplication is enabled."""
+        """Determinism holds with semantic deduplication in the evolution loop."""
         reg = _make_registry()
-        config = _base_config(seed=42, semantic_dedup_enabled=True)
+        config = _base_config(seed=42)
         context = _make_context()
         evaluator = SimpleFitnessEvaluator()
 
@@ -360,7 +359,6 @@ class TestNSGA2Reproducibility:
             ),
             constant_opt_enabled=False,
             simplification_enabled=False,
-            semantic_dedup_enabled=False,
         )
 
     def test_nsga2_deterministic(self) -> None:
@@ -471,7 +469,6 @@ class TestSeededReproducibility:
         config = _base_config(
             seed=42,
             simplification_enabled=True,
-            semantic_dedup_enabled=True,
             constant_opt_enabled=True,
         )
         context = _make_context()

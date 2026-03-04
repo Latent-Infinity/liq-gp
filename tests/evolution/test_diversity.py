@@ -244,7 +244,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         # Build a small population with distinct semantics
         programs: list[Program] = [
             TerminalNode(name="close", output_type=Series),
@@ -267,7 +267,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         # All duplicates
         programs: list[Program] = [close_node, close_node, close_node, close_node]
@@ -284,7 +284,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         volume_node = TerminalNode(name="volume", output_type=Series)
         # 2 unique out of 4
@@ -293,21 +293,19 @@ class TestDeduplicatePopulation:
         _, ratio = deduplicate_population(programs, ref, reg, config, rng)
         assert ratio == pytest.approx(2 / 4)
 
-    def test_disabled_dedup_returns_original(self) -> None:
-        """FR-8.6: When dedup is disabled, population is unchanged."""
+    def test_dedup_is_always_applied(self) -> None:
+        """Duplicate programs are replaced because dedup is always enabled."""
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=False, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         programs: list[Program] = [close_node, close_node, close_node]
         rng = np.random.default_rng(0)
         new_pop, ratio = deduplicate_population(programs, ref, reg, config, rng)
         assert len(new_pop) == 3
-        # All programs are the same, unchanged
-        for p in new_pop:
-            assert p == close_node
-        # Ratio is still computed even when disabled
+        assert new_pop[0] == close_node
+        assert any(program != close_node for program in new_pop[1:])
         assert ratio == pytest.approx(1 / 3)
 
     def test_population_size_preserved_after_dedup(self) -> None:
@@ -315,7 +313,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         volume_node = TerminalNode(name="volume", output_type=Series)
         programs: list[Program] = [
@@ -334,7 +332,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         programs: list[Program] = [close_node] * 10
         rng = np.random.default_rng(0)
@@ -347,7 +345,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=20, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         zero = ConstantNode(value=0.0)
         add_zero = FunctionNode(primitive=_add_info(), children=(close_node, zero))
@@ -364,7 +362,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         volume_node = TerminalNode(name="volume", output_type=Series)
         programs: list[Program] = [close_node, volume_node]
@@ -394,7 +392,7 @@ class TestDeduplicatePopulation:
         ctx = _make_context()
         ref = sample_reference_context(ctx, ref_size=10, rng=np.random.default_rng(0))
         reg = _make_registry()
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
         close_node = TerminalNode(name="close", output_type=Series)
         bad_fingerprints = [compute_fingerprint(close_node, ref, precision=6)]
         with pytest.raises(ValueError, match="must be provided for every individual"):
@@ -422,7 +420,7 @@ class TestDeduplicatePopulation:
             input_types=(Series, Series),
             output_type=BoolSeries,
         )
-        config = _make_config(semantic_dedup_enabled=True, semantic_precision=6)
+        config = _make_config(semantic_precision=6)
 
         # Two identical BoolSeries programs (duplicates)
         gt_info = reg.get("gt")

@@ -167,6 +167,24 @@ class TestPublicAPIImports:
 
         assert callable(initialize_seeded_population)
 
+    def test_objective_vector_adapter(self) -> None:
+        from liq.gp import ObjectiveVectorAdapter
+
+        assert ObjectiveVectorAdapter is not None
+
+    def test_regime_model_compiler(self) -> None:
+        from liq.gp import (
+            RegimeCompilerError,
+            RegimeModelContractError,
+            RegimePrimitiveContractError,
+            compile_regime_model_to_program,
+        )
+
+        assert callable(compile_regime_model_to_program)
+        assert RegimeCompilerError is not None
+        assert RegimeModelContractError is not None
+        assert RegimePrimitiveContractError is not None
+
     # -- Errors --
 
     def test_gp_error(self) -> None:
@@ -248,8 +266,13 @@ class TestAllExports:
         "validate_seed_programs",
         "initialize_seeded_population",
         "inject_seeds",
+        "ObjectiveVectorAdapter",
         "FitnessEvaluator",
         "GenerationCallback",
+        "compile_regime_model_to_program",
+        "RegimeCompilerError",
+        "RegimeModelContractError",
+        "RegimePrimitiveContractError",
         # Errors
         "GPError",
         "PrimitiveError",

@@ -251,7 +251,14 @@ def _constant_folding(node: Program) -> Program | None:
     except Exception:  # noqa: BLE001 – guard against div-by-zero etc.
         return None
 
-    return ConstantNode(value=float(result), output_type=node.primitive.output_type)
+    try:
+        folded_value = float(result)
+    except (TypeError, ValueError):
+        # Non-scalar outputs (e.g. vectorized indicator calls) are not safe
+        # to fold into a scalar ConstantNode.
+        return None
+
+    return ConstantNode(value=folded_value, output_type=node.primitive.output_type)
 
 
 # ---------------------------------------------------------------------------

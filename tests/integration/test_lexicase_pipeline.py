@@ -74,7 +74,6 @@ def _make_lexicase_config(seed: int) -> GPConfig:
         parsimony_mode="disabled",
         constant_opt_enabled=False,
         simplification_enabled=False,
-        semantic_dedup_enabled=False,
         fitness=FitnessConfig(objectives=["fitness"], objective_directions=["maximize"]),
     )
 

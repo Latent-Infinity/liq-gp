@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from liq.gp.primitives.registry import PrimitiveInfo, PrimitiveRegistry
@@ -15,6 +17,108 @@ from liq.gp.program.ast import (
 from liq.gp.types import BoolSeries, ParamSpec, Series
 
 # --- helpers ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _RegimeBlock:
+    program: Program
+
+
+@dataclass(frozen=True)
+class _RegimeModel:
+    detector: _RegimeBlock
+    gate: _RegimeBlock
+    experts: tuple[_RegimeBlock, ...]
+    risk: _RegimeBlock | None = None
+    weights: tuple[float, ...] | list[float] | None = None
+
+
+def _make_regime_registry() -> PrimitiveRegistry:
+    reg = PrimitiveRegistry()
+    reg.register(
+        "if_then_else",
+        lambda cond, on_true, on_false: np.where(cond > 0.5, on_true, on_false),
+        category="control",
+        input_types=(BoolSeries, Series, Series),
+        output_type=Series,
+    )
+    reg.register(
+        "mul",
+        lambda a, b: a * b,
+        category="math",
+        input_types=(Series, Series),
+        output_type=Series,
+    )
+    reg.register(
+        "add",
+        lambda a, b: a + b,
+        category="math",
+        input_types=(Series, Series),
+        output_type=Series,
+    )
+    return reg
+
+
+def _make_regime_model(
+    registry: PrimitiveRegistry,
+    *,
+    gate_name: str = "gate",
+    detector_name: str = "detector",
+    expert_names: tuple[str, ...] = ("e1", "e2"),
+    include_risk: bool = False,
+) -> Program:
+    from liq.gp import compile_regime_model_to_program
+
+    detector = _RegimeBlock(TerminalNode(name=detector_name, output_type=BoolSeries))
+    gate = _RegimeBlock(TerminalNode(name=gate_name, output_type=BoolSeries))
+    experts = tuple(_RegimeBlock(TerminalNode(name=name, output_type=Series)) for name in expert_names)
+    risk = _RegimeBlock(TerminalNode(name="risk", output_type=Series)) if include_risk else None
+
+    model = _RegimeModel(
+        detector=detector,
+        gate=gate,
+        experts=experts,
+        risk=risk,
+    )
+    return compile_regime_model_to_program(model, registry)
+
+
+def _find_node(program: Program, name: str) -> Program:
+    for node in _collect_nodes(program):
+        if isinstance(node, TerminalNode) and node.name == name:
+            return node
+    return terminal_not_found(name)  # pragma: no cover
+
+
+def terminal_not_found(name: str) -> Program:
+    msg = f"No terminal named {name!r} in program"
+    raise AssertionError(msg)
+
+
+class _ScriptedRNG:
+    def __init__(self, values: tuple[int, ...] | list[int]) -> None:
+        self._values = list(values)
+        self._position = 0
+
+    def _next_int(self, low: int, high: int | None = None) -> int:
+        if self._position >= len(self._values):
+            self._position += 1
+            return 0
+        value = int(self._values[self._position])
+        self._position += 1
+        raw = value % (high - low if high is not None else low)
+        if high is None:
+            return raw
+        return raw + low
+
+    def integers(self, low: int, high: int | None = None, *args, **kwargs) -> int:
+        return self._next_int(low, high)
+
+    def random(self, *args, **kwargs) -> float:
+        return 0.5
+
+    def uniform(self, low: float, high: float, *args, **kwargs) -> float:
+        return (low + high) / 2.0
 
 
 def _make_registry() -> PrimitiveRegistry:
@@ -102,6 +206,27 @@ def _make_param_tree() -> ParameterizedNode:
         param_specs=[ps],
     )
     return ParameterizedNode(primitive=info, children=(close,), params={"period": 20})
+
+
+def _make_discrete_param_tree() -> ParameterizedNode:
+    """highest(close, period=21) with discrete grid."""
+    close = TerminalNode(name="close", output_type=Series)
+    ps = ParamSpec(
+        name="period",
+        dtype=int,
+        default=21,
+        allowed_values=[8, 13, 21, 34],
+    )
+    info = PrimitiveInfo(
+        name="highest",
+        category="indicator",
+        arity=1,
+        input_types=(Series,),
+        output_type=Series,
+        callable=lambda a, *, period=21: a,
+        param_specs=[ps],
+    )
+    return ParameterizedNode(primitive=info, children=(close,), params={"period": 21})
 
 
 def _collect_nodes(program: Program) -> list[Program]:
@@ -344,6 +469,18 @@ class TestParameterMutation:
         m2 = parameter_mutation(tree, rng=np.random.default_rng(42))
         assert m1 == m2
 
+    def test_discrete_mutation_selects_allowed_neighbor(self) -> None:
+        from liq.gp.evolution.operators import parameter_mutation
+
+        tree = _make_discrete_param_tree()
+        rng = np.random.default_rng(42)
+        mutant = parameter_mutation(tree, rng=rng)
+        for node in _collect_nodes(mutant):
+            if isinstance(node, ParameterizedNode):
+                ps = node.primitive.param_specs[0]
+                assert ps.value_is_discrete()
+                assert node.params[ps.name] in ps.allowed_values
+
 
 # --- Hoist mutation (FR-5.2.5) ---------------------------------------------
 
@@ -450,3 +587,164 @@ class TestOperatorSelection:
         assert "crossover" in counts
         assert "subtree_mutation" in counts
         assert "point_mutation" in counts
+
+
+class TestRegimeBlockConstrainedOperators:
+    """Block constraints protect regime boundaries during variation."""
+
+    def test_crossover_blocks_block_mismatches(self) -> None:
+        from liq.gp.evolution.operators import (
+            BlockConstraintTelemetry,
+            _collect_subtrees_by_type,
+            subtree_crossover,
+        )
+
+        registry = _make_regime_registry()
+        parent1 = _make_regime_model(
+            registry,
+            include_risk=True,
+            gate_name="gate_a",
+            detector_name="det_a",
+            expert_names=("a1", "a2"),
+        )
+        parent2 = _make_regime_model(
+            registry,
+            include_risk=True,
+            gate_name="gate_b",
+            detector_name="det_b",
+            expert_names=("b1", "b2"),
+        )
+
+        nodes1 = [node for node, _ in _collect_subtrees_by_type(parent1)]
+        nodes2 = [node for node, _ in _collect_subtrees_by_type(parent2)]
+        risk_idx = nodes1.index(_find_node(parent1, "risk"))
+        gate_idx = nodes2.index(_find_node(parent2, "gate_b"))
+        rng = _ScriptedRNG([risk_idx, gate_idx])
+        telemetry = BlockConstraintTelemetry()
+
+        child1, child2 = subtree_crossover(
+            parent1,
+            parent2,
+            registry,
+            max_depth=12,
+            rng=rng,
+            max_attempts=1,
+            block_constraint_telemetry=telemetry,
+        )
+
+        assert child1 == parent1
+        assert child2 == parent2
+        assert telemetry.blocked["crossover:risk"] == 1
+        assert telemetry.blocked["crossover:gate"] == 1
+        assert telemetry.attempted["crossover:risk"] == 1
+        assert telemetry.attempted["crossover:gate"] == 1
+
+    def test_crossover_only_accepts_matching_roles(self) -> None:
+        from liq.gp.evolution.operators import (
+            BlockConstraintTelemetry,
+            _collect_subtrees_by_type,
+            subtree_crossover,
+        )
+
+        registry = _make_regime_registry()
+        parent1 = _make_regime_model(
+            registry,
+            include_risk=True,
+            gate_name="gate_a",
+            detector_name="det_a",
+            expert_names=("a1", "a2"),
+        )
+        parent2 = _make_regime_model(
+            registry,
+            include_risk=True,
+            gate_name="gate_b",
+            detector_name="det_b",
+            expert_names=("b1", "b2"),
+        )
+
+        nodes1 = [node for node, _ in _collect_subtrees_by_type(parent1)]
+        nodes2 = [node for node, _ in _collect_subtrees_by_type(parent2)]
+        gate_idx_1 = nodes1.index(_find_node(parent1, "gate_a"))
+        gate_idx_2 = nodes2.index(_find_node(parent2, "gate_b"))
+        rng = _ScriptedRNG([gate_idx_1, gate_idx_2])
+        telemetry = BlockConstraintTelemetry()
+
+        child1, child2 = subtree_crossover(
+            parent1,
+            parent2,
+            registry,
+            max_depth=12,
+            rng=rng,
+            max_attempts=1,
+            block_constraint_telemetry=telemetry,
+        )
+
+        assert child1 != parent1
+        assert child2 != parent2
+        assert telemetry.accepted["crossover:gate"] == 1
+        assert telemetry.blocked == {}
+
+    def test_subtree_mutation_preserves_regime_roles(self) -> None:
+        from liq.gp.evolution.operators import (
+            BlockConstraintTelemetry,
+            _collect_subtrees_by_type,
+            subtree_mutation,
+        )
+
+        registry = _make_regime_registry()
+        parent = _make_regime_model(
+            registry,
+            include_risk=True,
+            gate_name="gate_a",
+            detector_name="det_a",
+            expert_names=("a1", "a2"),
+        )
+        nodes = [node for node, _ in _collect_subtrees_by_type(parent)]
+        det_idx = nodes.index(_find_node(parent, "det_a"))
+        rng = _ScriptedRNG([det_idx, 0])
+        telemetry = BlockConstraintTelemetry()
+
+        mutant = subtree_mutation(
+            parent,
+            registry,
+            max_depth=12,
+            rng=rng,
+            max_attempts=1,
+            block_constraint_telemetry=telemetry,
+        )
+
+        assert mutant != parent
+        assert telemetry.accepted["subtree_mutation:detector"] == 1
+        assert telemetry.blocked == {}
+
+    def test_point_mutation_preserves_block_context(self) -> None:
+        from liq.gp.evolution.operators import (
+            BlockConstraintTelemetry,
+            _collect_subtrees_by_type,
+            point_mutation,
+        )
+
+        registry = _make_regime_registry()
+        parent = _make_regime_model(
+            registry,
+            include_risk=True,
+            gate_name="gate_a",
+            detector_name="det_a",
+            expert_names=("a1", "a2"),
+        )
+        nodes = [node for node, _ in _collect_subtrees_by_type(parent)]
+        expert_idx = nodes.index(_find_node(parent, "a1"))
+        rng = _ScriptedRNG([expert_idx, 0])
+        telemetry = BlockConstraintTelemetry()
+
+        mutant = point_mutation(
+            parent,
+            registry,
+            rng,
+            max_attempts=1,
+            block_constraint_telemetry=telemetry,
+        )
+
+        assert mutant != parent
+        assert telemetry.accepted["point_mutation:expert:0"] == 1
+        assert telemetry.blocked == {}
