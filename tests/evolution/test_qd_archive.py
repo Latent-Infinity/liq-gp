@@ -71,7 +71,9 @@ def test_under_filled_bins_are_sampled_under_coverage_pressure() -> None:
     archive.insert(_program("full_a"), (1.0,), (0.1, 0.1))
     archive.insert(_program("full_b"), (1.0,), (0.1, 0.1))
     archive.insert(_program("underfilled"), (1.0,), (0.9, 0.9))
-    sampled = archive.sample(3, rng=__import__("numpy").random.default_rng(7), coverage_weight=1.0)
+    sampled = archive.sample(
+        3, rng=__import__("numpy").random.default_rng(7), coverage_weight=1.0
+    )
     assert sampled
     assert all(p.name == "underfilled" for p in sampled)  # type: ignore[attr-defined]
 
@@ -104,7 +106,10 @@ def test_roundtrip_serialization_is_recoverable() -> None:
         restore_individual=lambda name: _program(name),
     )
     assert restored.coverage_report() == archive.coverage_report()
-    assert {repr(p) for p in restored.elites()} == {repr(_program("a")), repr(_program("b"))}
+    assert {repr(p) for p in restored.elites()} == {
+        repr(_program("a")),
+        repr(_program("b")),
+    }
 
 
 def test_single_objective_singleton_bin_replacement() -> None:

@@ -32,19 +32,18 @@ class ObjectiveVectorAdapter:
         if expected_objective_count < 1:
             raise ValueError("expected_objective_count must be >= 1")
         if len(objective_directions) != expected_objective_count:
-            raise ValueError(
-                "objective_directions must match expected_objective_count"
-            )
-        if any(direction not in {"maximize", "minimize"} for direction in objective_directions):
+            raise ValueError("objective_directions must match expected_objective_count")
+        if any(
+            direction not in {"maximize", "minimize"}
+            for direction in objective_directions
+        ):
             raise ValueError(
                 "objective_directions must contain only 'maximize'/'minimize'"
             )
         if reduction_weights is None:
             reduction_weights = tuple([1.0] * expected_objective_count)
         if len(reduction_weights) != expected_objective_count:
-            raise ValueError(
-                "reduction_weights must match expected_objective_count"
-            )
+            raise ValueError("reduction_weights must match expected_objective_count")
         if any(weight < 0.0 for weight in reduction_weights):
             raise ValueError("reduction_weights must be >= 0")
         self._evaluator = evaluator
@@ -60,9 +59,7 @@ class ObjectiveVectorAdapter:
     ) -> list[FitnessResult]:
         raw = self._evaluate_inner(programs, context)
         if len(raw) != len(programs):
-            raise ValueError(
-                "wrapped evaluator returned mismatched result count"
-            )
+            raise ValueError("wrapped evaluator returned mismatched result count")
         return [self._adapt_result(result) for result in raw]
 
     def evaluate_fitness(

@@ -71,8 +71,15 @@ def _make_regime_model(
 
     detector = _RegimeBlock(TerminalNode(name=detector_name, output_type=BoolSeries))
     gate = _RegimeBlock(TerminalNode(name=gate_name, output_type=BoolSeries))
-    experts = tuple(_RegimeBlock(TerminalNode(name=name, output_type=Series)) for name in expert_names)
-    risk = _RegimeBlock(TerminalNode(name="risk", output_type=Series)) if include_risk else None
+    experts = tuple(
+        _RegimeBlock(TerminalNode(name=name, output_type=Series))
+        for name in expert_names
+    )
+    risk = (
+        _RegimeBlock(TerminalNode(name="risk", output_type=Series))
+        if include_risk
+        else None
+    )
 
     model = _RegimeModel(
         detector=detector,

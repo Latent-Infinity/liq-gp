@@ -8,8 +8,8 @@ import numpy as np
 
 from liq.gp import (
     BoolSeries,
-    Program,
     PrimitiveRegistry,
+    Program,
     Series,
     TerminalNode,
     compile_regime_model_to_program,
@@ -128,7 +128,10 @@ class TestModuleExtractionAndMotifs:
 
         assert {"gate", "detector", "risk"}.issubset(set(modules))
         assert {"expert:0", "expert:1"}.issubset(set(modules))
-        assert all(role.startswith("expert:") or role in {"gate", "detector", "risk"} for role in modules)
+        assert all(
+            role.startswith("expert:") or role in {"gate", "detector", "risk"}
+            for role in modules
+        )
 
     def test_mine_regime_motifs_discovers_frequent_modules(self) -> None:
         registry = _make_registry()
@@ -190,7 +193,9 @@ class TestModulePreservingCrossover:
         assert "risk_a" in _terminal_names(child2)
         assert telemetry.accepted["module_crossover:risk"] == 1
 
-    def test_module_preserving_crossover_falls_back_for_non_regime_programs(self) -> None:
+    def test_module_preserving_crossover_falls_back_for_non_regime_programs(
+        self,
+    ) -> None:
         registry = _make_registry()
         parent1 = TerminalNode(name="e1", output_type=Series)
         parent2 = TerminalNode(name="f1", output_type=Series)

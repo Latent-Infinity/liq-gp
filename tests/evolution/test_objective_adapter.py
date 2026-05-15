@@ -81,7 +81,9 @@ def _small_config() -> GPConfig:
 class TestObjectiveVectorAdapterContract:
     def test_vector_shape_and_versioned_metadata(self) -> None:
         adapter = ObjectiveVectorAdapter(
-            _VectorEvaluator([FitnessResult(objectives=(0.10, 0.20, 0.30), metadata={})]),
+            _VectorEvaluator(
+                [FitnessResult(objectives=(0.10, 0.20, 0.30), metadata={})]
+            ),
             expected_objective_count=3,
             objective_directions=("maximize", "minimize", "minimize"),
         )
@@ -144,7 +146,10 @@ class TestObjectiveVectorAdapterContract:
             programs: list[Any], context: dict[str, np.ndarray]
         ) -> list[FitnessResult]:
             del context
-            return [FitnessResult(objectives=(0.10, 0.02, 0.15), metadata={}) for _ in programs]
+            return [
+                FitnessResult(objectives=(0.10, 0.02, 0.15), metadata={})
+                for _ in programs
+            ]
 
         adapter = ObjectiveVectorAdapter(
             _callable,

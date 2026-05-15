@@ -18,9 +18,9 @@ from liq.gp.program.ast import (
     TerminalNode,
 )
 from liq.gp.program.constants import (
+    extract_constants,
     infer_constant_roles,
     infer_program_constant_role,
-    extract_constants,
     inject_constants,
     optimize_constants,
     select_for_optimization,
@@ -76,7 +76,9 @@ def _make_if_then_else_info() -> PrimitiveInfo:
         arity=3,
         input_types=(BoolSeries, Series, Series),
         output_type=Series,
-        callable=lambda condition, on_true, on_false: np.where(condition, on_true, on_false),
+        callable=lambda condition, on_true, on_false: np.where(
+            condition, on_true, on_false
+        ),
     )
 
 
@@ -666,10 +668,19 @@ class TestConstantRoleTagging:
 
     def test_dominant_role_defaults(self) -> None:
         """No-role and role-missing cases default to `other`."""
-        assert infer_program_constant_role(_make_gate_threshold_program()) == "gate_threshold"
-        assert infer_program_constant_role(_make_expert_weight_program()) == "expert_weight"
+        assert (
+            infer_program_constant_role(_make_gate_threshold_program())
+            == "gate_threshold"
+        )
+        assert (
+            infer_program_constant_role(_make_expert_weight_program())
+            == "expert_weight"
+        )
         assert infer_program_constant_role(_make_risk_scale_program()) == "risk_scale"
-        assert infer_program_constant_role(TerminalNode(name="x", output_type=Series)) == "other"
+        assert (
+            infer_program_constant_role(TerminalNode(name="x", output_type=Series))
+            == "other"
+        )
         assert infer_program_constant_role(_make_other_constant_program()) == "other"
 
 
@@ -685,8 +696,7 @@ class TestRoleAwareOptimizationSchedule:
             _make_other_constant_program(),
         ]
         fitnesses = [
-            FitnessResult(objectives=(float(i),))
-            for i in range(len(population))
+            FitnessResult(objectives=(float(i),)) for i in range(len(population))
         ]
         config = GPConfig(
             constant_opt_top_k=1.0,
@@ -698,11 +708,28 @@ class TestRoleAwareOptimizationSchedule:
             },
         )
 
-        assert select_for_optimization(population, fitnesses, config, generation=0) == [0, 1, 2, 3]
-        assert select_for_optimization(population, fitnesses, config, generation=1) == [0]
-        assert select_for_optimization(population, fitnesses, config, generation=2) == [0, 1]
-        assert select_for_optimization(population, fitnesses, config, generation=3) == [0, 2]
-        assert select_for_optimization(population, fitnesses, config, generation=4) == [0, 1, 3]
+        assert select_for_optimization(population, fitnesses, config, generation=0) == [
+            0,
+            1,
+            2,
+            3,
+        ]
+        assert select_for_optimization(population, fitnesses, config, generation=1) == [
+            0
+        ]
+        assert select_for_optimization(population, fitnesses, config, generation=2) == [
+            0,
+            1,
+        ]
+        assert select_for_optimization(population, fitnesses, config, generation=3) == [
+            0,
+            2,
+        ]
+        assert select_for_optimization(population, fitnesses, config, generation=4) == [
+            0,
+            1,
+            3,
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +790,7 @@ class TestSelectForOptimization:
             constant_opt_mode="probabilistic",
         )
 
-        hits: dict[int, int] = {idx: 0 for idx in range(len(population))}
+        hits: dict[int, int] = dict.fromkeys(range(len(population)), 0)
         for seed in range(400):
             indices = select_for_optimization(
                 population,

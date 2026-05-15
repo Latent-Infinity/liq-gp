@@ -6,11 +6,11 @@ parameter mutation, hoist mutation, and operator selection.
 
 from __future__ import annotations
 
-from collections import Counter
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 import numpy as np
 
@@ -120,8 +120,14 @@ def _replace_at_node(
     return tree  # pragma: no cover
 
 
-def _is_named_primitive(node: Program, name: str) -> bool:
-    return isinstance(node, (FunctionNode, ParameterizedNode)) and node.primitive.name == name
+def _is_named_primitive(
+    node: Program,
+    name: str,
+) -> TypeGuard[FunctionNode | ParameterizedNode]:
+    return (
+        isinstance(node, (FunctionNode, ParameterizedNode))
+        and node.primitive.name == name
+    )
 
 
 def _assign_role(
@@ -195,7 +201,9 @@ def _collect_regime_block_roles(program: Program) -> dict[int, str]:
     """
     role_map: dict[int, str] = {}
 
-    def looks_like_gate_root(node: Program) -> bool:
+    def looks_like_gate_root(
+        node: Program,
+    ) -> TypeGuard[FunctionNode | ParameterizedNode]:
         return (
             _is_named_primitive(node, "if_then_else")
             and node.primitive.arity == 3
@@ -205,7 +213,7 @@ def _collect_regime_block_roles(program: Program) -> dict[int, str]:
             and node.children[2].output_type is Series
         )
 
-    gate_root: Program | None = None
+    gate_root: FunctionNode | ParameterizedNode | None = None
 
     # Optional risk wrapper: mul(risk, active_gate_tree)
     if _is_named_primitive(program, "mul") and program.primitive.arity == 2:
@@ -289,7 +297,7 @@ def _record_block_result(
     role: str,
     *,
     blocked: bool,
-)->None:
+) -> None:
     if telemetry is None:
         return
     telemetry.record_attempt(operation, role, blocked=blocked)
@@ -403,6 +411,7 @@ def subtree_crossover(
     for _ in range(max(1, max_attempts)):
         n1, d1 = nodes1[int(rng.integers(len(nodes1)))]
         n2, d2 = nodes2[int(rng.integers(len(nodes2)))]
+        role1: str | None = None
 
         if enforce_roles:
             role1, role2 = _classify_crossover_roles(role_map1, role_map2, n1, n2)
@@ -704,9 +713,7 @@ def _mutate_params_in_node(
 
             # Distance-weighted neighbor selection by inverse distance.
             neighbor_indices = [
-                index
-                for index in range(len(values))
-                if index != current_index
+                index for index in range(len(values)) if index != current_index
             ]
             if not neighbor_indices:
                 # Single-value domain: no-op (deterministic self-reference).
@@ -722,11 +729,15 @@ def _mutate_params_in_node(
             continue
 
         # Gaussian noise scaled to ~10% of the range
-        noise_scale = (ps.max_value - ps.min_value) * 0.1
+        if ps.min_value is None or ps.max_value is None:
+            raise ValueError(f"parameter {ps.name!r} requires min_value and max_value")
+        min_value = float(ps.min_value)
+        max_value = float(ps.max_value)
+        noise_scale = (max_value - min_value) * 0.1
         noise = float(rng.normal(0, noise_scale))
         new_val = float(old_val) + noise
         # Clamp to range
-        new_val = max(float(ps.min_value), min(float(ps.max_value), new_val))
+        new_val = max(min_value, min(max_value, new_val))
         if ps.dtype is int:
             new_params[ps.name] = int(round(new_val))
         else:

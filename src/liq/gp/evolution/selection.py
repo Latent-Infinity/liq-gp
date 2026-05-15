@@ -7,8 +7,8 @@ the shared selection dispatcher.
 from __future__ import annotations
 
 import math
-import statistics
 import numbers
+import statistics
 from collections import defaultdict
 from functools import cmp_to_key
 from typing import TYPE_CHECKING, Literal, cast
@@ -177,7 +177,9 @@ def _align_slice_scores(
     return ordered_case_ids, aligned
 
 
-def _case_epsilon(values: list[float], strategy: Literal["mad", "percentile", "zero"], q: float) -> float:
+def _case_epsilon(
+    values: list[float], strategy: Literal["mad", "percentile", "zero"], q: float
+) -> float:
     """Compute epsilon for one case column."""
     if not values:
         return 0.0
@@ -251,7 +253,9 @@ def _prepare_lexicase_case_scores(
             continue
 
         raw_len = len(raw_objectives)
-        score_map = _extract_slice_scores(fitness, nan_penalty=config.lexicase_nan_penalty)
+        score_map = _extract_slice_scores(
+            fitness, nan_penalty=config.lexicase_nan_penalty
+        )
         if score_map and len(score_map) != raw_len:
             msg = (
                 "metadata['slice_scores'] and metadata['raw_objectives'] "

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypeGuard, runtime_checkable
 
 from liq.gp.errors import PrimitiveError
 from liq.gp.primitives.registry import PrimitiveInfo, PrimitiveRegistry
@@ -55,7 +54,7 @@ class RegimeModelLike(Protocol):
     weights: RegimeWeightsLike | Sequence[float] | None
 
 
-def _is_program(candidate: object) -> bool:
+def _is_program(candidate: object) -> TypeGuard[Program]:
     return isinstance(
         candidate,
         (TerminalNode, ConstantNode, FunctionNode, ParameterizedNode),
@@ -95,10 +94,7 @@ def _extract_weights(model: RegimeModelLike) -> tuple[float, ...]:
     raw = model.weights
     if raw is None:
         return ()
-    if isinstance(raw, RegimeWeightsLike):
-        raw_weights = raw.values
-    else:
-        raw_weights = raw
+    raw_weights = raw.values if isinstance(raw, RegimeWeightsLike) else raw
     return tuple(float(item) for item in raw_weights)
 
 
@@ -111,8 +107,10 @@ def _expect_block_program(model: RegimeModelLike, role: str) -> Program:
     if not isinstance(block, RegimeBlockLike):
         raise RegimeModelContractError(f"Regime model missing or invalid {role} block")
 
-    program = getattr(block, "program")
-    if not isinstance(program, (TerminalNode, ConstantNode, FunctionNode, ParameterizedNode)):
+    program = block.program
+    if not isinstance(
+        program, (TerminalNode, ConstantNode, FunctionNode, ParameterizedNode)
+    ):
         raise RegimeModelContractError(
             f"Regime {role} block program must be a GP Program node"
         )
@@ -120,7 +118,7 @@ def _expect_block_program(model: RegimeModelLike, role: str) -> Program:
 
 
 def _expect_expert_programs(model: RegimeModelLike) -> list[Program]:
-    experts = getattr(model, "experts")
+    experts = model.experts
     if not isinstance(experts, Sequence):
         raise RegimeModelContractError("Regime model experts must be a sequence")
     if not experts:
@@ -134,20 +132,24 @@ def _expect_expert_programs(model: RegimeModelLike) -> list[Program]:
             expert.program,
             (TerminalNode, ConstantNode, FunctionNode, ParameterizedNode),
         ):
-            raise RegimeModelContractError("Expert block program must be a GP Program node")
+            raise RegimeModelContractError(
+                "Expert block program must be a GP Program node"
+            )
         programs.append(expert.program)
     return programs
 
 
 def _expect_optional_risk_program(model: RegimeModelLike) -> Program | None:
-    risk = getattr(model, "risk")
+    risk = model.risk
     if risk is None:
         return None
     if _is_program(risk):
         return risk
     if not isinstance(risk, RegimeBlockLike):
         raise RegimeModelContractError("Regime risk block must be a valid regime block")
-    if not isinstance(risk.program, (TerminalNode, ConstantNode, FunctionNode, ParameterizedNode)):
+    if not isinstance(
+        risk.program, (TerminalNode, ConstantNode, FunctionNode, ParameterizedNode)
+    ):
         raise RegimeModelContractError("Risk block program must be a GP Program node")
     return risk.program
 
@@ -160,7 +162,9 @@ def _require_output_type(program: Program, expected: GPType, role: str) -> None:
 
 
 def _mul(registry: PrimitiveRegistry, a: Program, b: Program) -> FunctionNode:
-    mul_primitive = _require_primitive(registry, "mul", expected_arity=2, expected_output_type=Series)
+    mul_primitive = _require_primitive(
+        registry, "mul", expected_arity=2, expected_output_type=Series
+    )
     return FunctionNode(primitive=mul_primitive, children=(a, b))
 
 
@@ -186,7 +190,9 @@ def _if_then_else(
         expected_arity=3,
         expected_output_type=Series,
     )
-    return FunctionNode(primitive=ite_primitive, children=(condition, on_true, on_false))
+    return FunctionNode(
+        primitive=ite_primitive, children=(condition, on_true, on_false)
+    )
 
 
 def compile_regime_model_to_program(
@@ -231,8 +237,10 @@ def compile_regime_model_to_program(
         normalized_weights = tuple(1.0 for _ in expert_programs)
 
     experts_fold: Program | None = None
-    for expert_program, weight in zip(expert_programs, normalized_weights):
-        weighted = _mul(registry, expert_program, ConstantNode(weight, output_type=Series))
+    for expert_program, weight in zip(expert_programs, normalized_weights, strict=True):
+        weighted = _mul(
+            registry, expert_program, ConstantNode(weight, output_type=Series)
+        )
         if experts_fold is None:
             experts_fold = weighted
         else:
@@ -241,7 +249,9 @@ def compile_regime_model_to_program(
     if experts_fold is None:
         raise RegimeModelContractError("No experts were provided")
 
-    detected = _if_then_else(registry, detector, experts_fold, ConstantNode(0.0, output_type=Series))
+    detected = _if_then_else(
+        registry, detector, experts_fold, ConstantNode(0.0, output_type=Series)
+    )
     active = _if_then_else(
         registry,
         gate,

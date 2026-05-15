@@ -84,11 +84,13 @@ def _sample_params(
                 params[ps.name] = float(val)
             continue
 
+        if ps.min_value is None or ps.max_value is None:
+            raise ValueError(f"parameter {ps.name!r} requires min_value and max_value")
         if ps.dtype is int:
             val = int(rng.integers(int(ps.min_value), int(ps.max_value) + 1))
             params[ps.name] = val
         else:
-            val = float(rng.uniform(ps.min_value, ps.max_value))
+            val = float(rng.uniform(float(ps.min_value), float(ps.max_value)))
             params[ps.name] = val
     return params
 

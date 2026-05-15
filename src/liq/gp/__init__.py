@@ -43,12 +43,6 @@ from liq.gp.program.serialize import (
 )
 from liq.gp.program.simplify import simplify
 from liq.gp.protocols import FitnessEvaluator, GenerationCallback
-from liq.gp.types_regime import (
-    RegimeCompilerError,
-    RegimeModelContractError,
-    RegimePrimitiveContractError,
-    compile_regime_model_to_program,
-)
 from liq.gp.types import (
     BoolSeries,
     EvolutionResult,
@@ -58,6 +52,12 @@ from liq.gp.types import (
     ParamSpec,
     Scalar,
     Series,
+)
+from liq.gp.types_regime import (
+    RegimeCompilerError,
+    RegimeModelContractError,
+    RegimePrimitiveContractError,
+    compile_regime_model_to_program,
 )
 
 __all__ = [

@@ -7,12 +7,12 @@ deduplication, and statistics tracking.
 
 from __future__ import annotations
 
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from inspect import signature
-from collections.abc import Callable, Sequence
-from dataclasses import replace
 import logging
 import time
+from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import replace
+from inspect import signature
 from typing import Literal, cast
 
 import numpy as np
@@ -166,7 +166,9 @@ def evolve(
         crowding = None
         if config.selection_mode == "nsga2":
             fronts, ranks, crowding = compute_nsga2_rankings(fitnesses, config)
-        selection_context = SelectionContext(fronts=fronts, ranks=ranks, crowding=crowding)
+        selection_context = SelectionContext(
+            fronts=fronts, ranks=ranks, crowding=crowding
+        )
 
         # --- Compute generation statistics ---
         pareto_front_size = len(fronts[0]) if fronts else None
@@ -320,6 +322,7 @@ def evolve(
                 optimize_constants,
                 select_for_optimization,
             )
+
             constant_opt_budget = config.constant_opt_max_evals
 
             # Re-evaluate after combination
@@ -697,7 +700,9 @@ def _evaluate_population_bounded(
     ]
     context_bytes = int(sum(values.nbytes for values in context.values()))
     memory_budget_bytes = int(scheduler.memory_budget_mb * 1024 * 1024)
-    estimated_inflight_bytes = context_bytes * max(1, min(scheduler.max_in_flight, len(chunks)))
+    estimated_inflight_bytes = context_bytes * max(
+        1, min(scheduler.max_in_flight, len(chunks))
+    )
 
     def _sequential(reason_code: str) -> tuple[list[FitnessResult], dict[str, object]]:
         elapsed = float(time.perf_counter() - start)

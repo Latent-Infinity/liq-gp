@@ -41,16 +41,25 @@ registry.register("x", lambda: None, input_types=(), output_type=Series)
 
 # Functions operate on NumPy arrays.
 registry.register(
-    "add", lambda a, b: a + b,
-    category="arithmetic", input_types=(Series, Series), output_type=Series,
+    "add",
+    lambda a, b: a + b,
+    category="arithmetic",
+    input_types=(Series, Series),
+    output_type=Series,
 )
 registry.register(
-    "mul", lambda a, b: a * b,
-    category="arithmetic", input_types=(Series, Series), output_type=Series,
+    "mul",
+    lambda a, b: a * b,
+    category="arithmetic",
+    input_types=(Series, Series),
+    output_type=Series,
 )
 registry.register(
-    "neg", lambda a: -a,
-    category="arithmetic", input_types=(Series,), output_type=Series,
+    "neg",
+    lambda a: -a,
+    category="arithmetic",
+    input_types=(Series,),
+    output_type=Series,
 )
 
 
@@ -67,7 +76,9 @@ class RegressionEvaluator:
         self.target = target
 
     def evaluate(
-        self, programs: list[Program], context: dict[str, np.ndarray],
+        self,
+        programs: list[Program],
+        context: dict[str, np.ndarray],
     ) -> list[FitnessResult]:
         results: list[FitnessResult] = []
         for prog in programs:
@@ -140,7 +151,10 @@ config2 = GPConfig(
 )
 
 result2 = evolve(
-    registry, config2, evaluator, context,
+    registry,
+    config2,
+    evaluator,
+    context,
     seed_programs=[result1.best_program],
     callback=on_gen,
 )
@@ -169,7 +183,10 @@ config3 = GPConfig(
 )
 
 result3 = evolve(
-    registry, config3, evaluator, context,
+    registry,
+    config3,
+    evaluator,
+    context,
     seed_programs=result1.pareto_front,
     callback=on_gen,
 )
@@ -207,7 +224,10 @@ config4 = GPConfig(
 )
 
 result4 = evolve(
-    registry, config4, evaluator, context,
+    registry,
+    config4,
+    evaluator,
+    context,
     seed_programs=[manual_seed],
     callback=on_gen,
 )
@@ -243,7 +263,10 @@ config5 = GPConfig(
 )
 
 result5 = evolve(
-    registry, config5, evaluator, context,
+    registry,
+    config5,
+    evaluator,
+    context,
     seed_programs=[restored],
     callback=on_gen,
 )

@@ -91,7 +91,9 @@ class TestBoundedSchedulerContracts:
             safe_fallback_mode="fail",
         )
         evaluator = RecordingEvaluator()
-        result = evolve(_make_registry(), _base_config(scheduler=scheduler), evaluator, _context())
+        result = evolve(
+            _make_registry(), _base_config(scheduler=scheduler), evaluator, _context()
+        )
         metrics = result.fitness_history[0].scheduler_metrics
         assert metrics["mode"] == "bounded"
         assert metrics["peak_in_flight"] <= 2
@@ -111,7 +113,12 @@ class TestBoundedSchedulerContracts:
             safe_fallback_mode="fail",
         )
         with pytest.raises(EvolutionError, match="scheduler_queue_saturated"):
-            evolve(_make_registry(), _base_config(scheduler=scheduler), RecordingEvaluator(), _context())
+            evolve(
+                _make_registry(),
+                _base_config(scheduler=scheduler),
+                RecordingEvaluator(),
+                _context(),
+            )
 
     def test_timeout_saturation_falls_back_safely(self, caplog) -> None:
         scheduler = SchedulerConfig(
@@ -155,14 +162,16 @@ class TestBoundedSchedulerContracts:
             max_cpu_workers=2,
             safe_fallback_mode="fail",
         )
-        with caplog.at_level(logging.WARNING, logger="liq.gp.evolution.engine"):
-            with pytest.raises(EvolutionError, match="scheduler_timeout"):
-                evolve(
-                    _make_registry(),
-                    _base_config(scheduler=scheduler),
-                    SlowEvaluator(delay_seconds=0.01),
-                    _context(),
-                )
+        with (
+            caplog.at_level(logging.WARNING, logger="liq.gp.evolution.engine"),
+            pytest.raises(EvolutionError, match="scheduler_timeout"),
+        ):
+            evolve(
+                _make_registry(),
+                _base_config(scheduler=scheduler),
+                SlowEvaluator(delay_seconds=0.01),
+                _context(),
+            )
         messages = [record.getMessage() for record in caplog.records]
         assert any(
             "bounded_evaluator_saturated reason=scheduler_timeout" in message

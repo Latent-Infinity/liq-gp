@@ -155,7 +155,9 @@ class TestParamSpec:
         assert p.allowed_values == [0.2, 0.5, 1.0]
 
     def test_discrete_default_must_be_in_values(self) -> None:
-        with pytest.raises(ValueError, match="default \\(13\\) must be in allowed_values"):
+        with pytest.raises(
+            ValueError, match="default \\(13\\) must be in allowed_values"
+        ):
             ParamSpec(
                 name="period",
                 dtype=int,
@@ -164,7 +166,9 @@ class TestParamSpec:
             )
 
     def test_discrete_empty_values_rejected(self) -> None:
-        with pytest.raises(ValueError, match="allowed_values must be a non-empty sequence"):
+        with pytest.raises(
+            ValueError, match="allowed_values must be a non-empty sequence"
+        ):
             ParamSpec(name="period", dtype=int, default=2, allowed_values=[])
 
     def test_discrete_min_max_optional(self) -> None:

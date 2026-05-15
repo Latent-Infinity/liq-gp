@@ -9,7 +9,6 @@ import numpy as np
 from liq.gp.config import FitnessConfig, GPConfig
 from liq.gp.evolution.engine import evolve
 from liq.gp.primitives.registry import PrimitiveRegistry
-from liq.gp.program.ast import FunctionNode, TerminalNode
 from liq.gp.types import FitnessResult, Series
 
 
@@ -47,9 +46,27 @@ class _ToyLexicaseEvaluator:
 def _make_registry() -> PrimitiveRegistry:
     reg = PrimitiveRegistry()
     reg.register("x", lambda: None, output_type=Series)
-    reg.register("add", lambda a, b: a + b, category="arithmetic", input_types=(Series, Series), output_type=Series)
-    reg.register("neg", lambda x: -x, category="arithmetic", input_types=(Series,), output_type=Series)
-    reg.register("sub", lambda a, b: a - b, category="arithmetic", input_types=(Series, Series), output_type=Series)
+    reg.register(
+        "add",
+        lambda a, b: a + b,
+        category="arithmetic",
+        input_types=(Series, Series),
+        output_type=Series,
+    )
+    reg.register(
+        "neg",
+        lambda x: -x,
+        category="arithmetic",
+        input_types=(Series,),
+        output_type=Series,
+    )
+    reg.register(
+        "sub",
+        lambda a, b: a - b,
+        category="arithmetic",
+        input_types=(Series, Series),
+        output_type=Series,
+    )
     reg.register(
         "mul",
         lambda a, b: a * b,
@@ -74,7 +91,9 @@ def _make_lexicase_config(seed: int) -> GPConfig:
         parsimony_mode="disabled",
         constant_opt_enabled=False,
         simplification_enabled=False,
-        fitness=FitnessConfig(objectives=["fitness"], objective_directions=["maximize"]),
+        fitness=FitnessConfig(
+            objectives=["fitness"], objective_directions=["maximize"]
+        ),
     )
 
 
@@ -90,10 +109,14 @@ def test_lexicase_evolution_smoke_and_deterministic_replay() -> None:
     context = {"x": np.linspace(-1.0, 1.0, 120)}
 
     evaluator_1 = _ToyLexicaseEvaluator()
-    result_1 = evolve(registry=registry, config=config, evaluator=evaluator_1, context=context)
+    result_1 = evolve(
+        registry=registry, config=config, evaluator=evaluator_1, context=context
+    )
 
     evaluator_2 = _ToyLexicaseEvaluator()
-    result_2 = evolve(registry=registry, config=config, evaluator=evaluator_2, context=context)
+    result_2 = evolve(
+        registry=registry, config=config, evaluator=evaluator_2, context=context
+    )
 
     assert result_1.best_program == result_2.best_program
     assert result_1.fitness_history == result_2.fitness_history

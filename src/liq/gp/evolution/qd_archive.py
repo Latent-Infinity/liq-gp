@@ -8,8 +8,9 @@ replacement with size-aware crowding eviction when a bin overfills.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal, cast
 
 ObjectiveDirection = Literal["maximize", "minimize"]
 
@@ -41,7 +42,10 @@ def _parse_objective_directions(
         raise ValueError("objective_directions must be non-empty")
     if len(objective_directions) < dimensions:
         # Missing directions default to maximize, matching existing engine defaults.
-        return list(objective_directions) + (["maximize"] * (dimensions - len(objective_directions)))
+        default_directions: list[ObjectiveDirection] = [
+            "maximize" for _ in range(dimensions - len(objective_directions))
+        ]
+        return list(objective_directions) + default_directions
     return list(objective_directions[:dimensions])
 
 
@@ -59,7 +63,7 @@ def _dominates(
         return False
 
     improved = False
-    for lv, rv, direction in zip(left, right, directions):
+    for lv, rv, direction in zip(left, right, directions, strict=True):
         if not math.isfinite(lv) or not math.isfinite(rv):
             return False
         if direction == "maximize":
@@ -129,9 +133,13 @@ class QDArchive:
     def _as_float_tuple(values: tuple[float, ...] | list[float]) -> tuple[float, ...]:
         return tuple(float(value) for value in values)
 
-    def _bin_index(self, value: float, *, min_value: float, max_value: float, bins: int) -> int:
+    def _bin_index(
+        self, value: float, *, min_value: float, max_value: float, bins: int
+    ) -> int:
         if not (min_value <= value <= max_value):
-            raise ValueError(f"descriptor {value!r} outside bounds [{min_value}, {max_value}]")
+            raise ValueError(
+                f"descriptor {value!r} outside bounds [{min_value}, {max_value}]"
+            )
         span = max_value - min_value
         raw = (value - min_value) / span * bins
         index = int(raw)
@@ -155,6 +163,7 @@ class QDArchive:
                 descriptors,
                 self.descriptor_bounds,
                 self.bins_per_dim,
+                strict=True,
             )
         )
 
@@ -231,7 +240,9 @@ class QDArchive:
         )
         key = self._to_bin(normalized_descriptors)
         bucket = self._bins.setdefault(key, [])
-        directions = _parse_objective_directions(self.objective_directions, len(normalized_objectives))
+        directions = _parse_objective_directions(
+            self.objective_directions, len(normalized_objectives)
+        )
 
         dominated_indices: list[int] = []
         for index, current in enumerate(bucket):
@@ -296,12 +307,12 @@ class QDArchive:
             use_coverage = bool(underfilled) and rng.random() < coverage_weight
 
             if use_coverage:
-                underfilled.sort(
-                    key=lambda item: (len(item[1]), item[0])
-                )
+                underfilled.sort(key=lambda item: (len(item[1]), item[0]))
                 bucket_entries = underfilled[0][1]
             else:
-                candidate_entries = [entry for bucket in self._bins.values() for entry in bucket]
+                candidate_entries = [
+                    entry for bucket in self._bins.values() for entry in bucket
+                ]
                 if max_first:
                     best_value = max(
                         entry.objectives[0] if len(entry.objectives) > 0 else 0.0
@@ -334,9 +345,7 @@ class QDArchive:
 
     def coverage_report(self) -> dict[str, object]:
         """Return fill ratio and per-dimension histogram counts."""
-        hist: list[list[int]] = [
-            [0 for _ in range(n)] for n in self.bins_per_dim
-        ]
+        hist: list[list[int]] = [[0 for _ in range(n)] for n in self.bins_per_dim]
         for bin_key, entries in self._bins.items():
             for dim, index in enumerate(bin_key):
                 hist[dim][index] += len(entries)
@@ -380,25 +389,37 @@ class QDArchive:
         payload: dict[str, object],
         *,
         restore_individual: Callable[[str], object] | None = None,
-    ) -> "QDArchive":
+    ) -> QDArchive:
         """Reconstruct a serializable archive payload."""
+        bins_per_dim = cast(int | tuple[int, ...] | list[int], payload["bins_per_dim"])
+        descriptor_bounds = cast(
+            Sequence[Sequence[float]], payload["descriptor_bounds"]
+        )
+        objective_directions = cast(
+            list[ObjectiveDirection], payload["objective_directions"]
+        )
         archive = cls(
-            n_dims=int(payload["n_dims"]),
-            bins_per_dim=tuple(payload["bins_per_dim"]),  # type: ignore[arg-type]
+            n_dims=int(cast(int, payload["n_dims"])),
+            bins_per_dim=tuple(bins_per_dim)
+            if not isinstance(bins_per_dim, int)
+            else bins_per_dim,
             descriptor_bounds=tuple(
-                (float(lower), float(upper))
-                for lower, upper in payload["descriptor_bounds"]  # type: ignore[union-attr]
+                (float(lower), float(upper)) for lower, upper in descriptor_bounds
             ),
-            objective_directions=list(payload["objective_directions"]),  # type: ignore[arg-type]
-            bin_capacity=int(payload["bin_capacity"]),
+            objective_directions=objective_directions,
+            bin_capacity=int(cast(int, payload["bin_capacity"])),
         )
         if restore_individual is None:
             restore_individual = str
-        for raw_entry in payload["entries"]:  # type: ignore[union-attr]
-            raw = raw_entry  # type: ignore[assignment]
+        entries = cast(Sequence[dict[str, object]], payload["entries"])
+        for raw in entries:
             archive.insert(
-                individual=restore_individual(raw["individual_repr"]),  # type: ignore[arg-type]
-                objectives=tuple(raw["objectives"]),  # type: ignore[arg-type]
-                descriptors=tuple(raw["descriptors"]),  # type: ignore[arg-type]
+                individual=restore_individual(str(raw["individual_repr"])),
+                objectives=tuple(
+                    float(value) for value in cast(Sequence[float], raw["objectives"])
+                ),
+                descriptors=tuple(
+                    float(value) for value in cast(Sequence[float], raw["descriptors"])
+                ),
             )
         return archive

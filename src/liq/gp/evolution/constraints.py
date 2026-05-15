@@ -10,7 +10,6 @@ Functions
 from __future__ import annotations
 
 from collections import Counter
-
 from typing import TYPE_CHECKING
 
 from liq.gp.types import FitnessResult

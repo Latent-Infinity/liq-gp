@@ -10,15 +10,15 @@ import pytest
 
 from liq.gp.config import FitnessConfig, GPConfig
 from liq.gp.evolution.selection import (
+    _case_epsilon,
+    _downsample_cases,
+    _prepare_lexicase_case_scores,
     compute_nsga2_rankings,
     crowding_distance,
     get_elites,
-    non_dominated_sort,
-    _case_epsilon,
-    _downsample_cases,
-    nsga2_select,
-    _prepare_lexicase_case_scores,
     lexicase_select,
+    non_dominated_sort,
+    nsga2_select,
     select,
     tournament_select,
 )
@@ -451,7 +451,6 @@ class TestLexicaseSelection:
 
     def test_aligns_case_keys_and_penalizes_missing(self) -> None:
         """Missing keys are filled with nan_penalty for lexicase comparability."""
-        pop = _make_programs(3)
         fit = [
             _make_fitness_with_metadata(
                 (1.0,),
@@ -508,7 +507,6 @@ class TestLexicaseSelection:
 
     def test_missing_slice_scores_for_all_is_rejected(self) -> None:
         """Lexicase mode requires at least one per-slice key."""
-        pop = _make_programs(3)
         fit = [
             _make_fitness_with_metadata((1.0,), {}),
             _make_fitness((1.0,)),
@@ -521,7 +519,9 @@ class TestLexicaseSelection:
     def test_lexicase_prefers_better_slice_scores(self) -> None:
         """Single-case lexicase always picks the lowest-loss program."""
         pop = _make_programs(10)
-        fit = _make_lexicase_fitnesses([10.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        fit = _make_lexicase_fitnesses(
+            [10.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        )
         config = _lexicase_config(population_size=10, elitism_count=7)
         selected = lexicase_select(pop, fit, config, np.random.default_rng(7))
         assert selected == [pop[2], pop[2], pop[2]]
@@ -529,7 +529,9 @@ class TestLexicaseSelection:
     def test_lexicase_uses_case_loss_without_objective_direction(self) -> None:
         """Slice scores are treated as loss values regardless of objective direction."""
         pop = _make_programs(10)
-        fit = _make_lexicase_fitnesses([10.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        fit = _make_lexicase_fitnesses(
+            [10.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        )
         config_maximize = _lexicase_config(population_size=10, elitism_count=7)
         config_minimize = _lexicase_config(
             population_size=10,
@@ -539,15 +541,21 @@ class TestLexicaseSelection:
                 objective_directions=["minimize"],
             ),
         )
-        selected_max = lexicase_select(pop, fit, config_maximize, np.random.default_rng(7))
-        selected_min = lexicase_select(pop, fit, config_minimize, np.random.default_rng(7))
+        selected_max = lexicase_select(
+            pop, fit, config_maximize, np.random.default_rng(7)
+        )
+        selected_min = lexicase_select(
+            pop, fit, config_minimize, np.random.default_rng(7)
+        )
         assert selected_max == [pop[2], pop[2], pop[2]]
         assert selected_max == selected_min
 
     def test_lexicase_select_dispatches(self) -> None:
         """select dispatches to lexicase mode."""
         pop = _make_programs(10)
-        fit = _make_lexicase_fitnesses([0.0, 0.5, 1.0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+        fit = _make_lexicase_fitnesses(
+            [0.0, 0.5, 1.0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+        )
         config = _lexicase_config()
         rng = np.random.default_rng(1)
         result = select(pop, fit, config, rng)
@@ -683,7 +691,6 @@ class TestLexicaseValidation:
 
     def test_mismatched_slice_payloads_are_filled_with_penalty(self) -> None:
         """Non-dict slice metadata still aligns with the union key set."""
-        pop = _make_programs(2)
         fit = [
             _make_fitness_with_metadata((1.0,), {"slice_scores": {"s1": "bad"}}),
             _make_fitness_with_metadata((1.0,), {"slice_scores": ["not", "a", "dict"]}),
@@ -951,7 +958,28 @@ class TestDeterminism:
         """Lexicase selection is deterministic for a fixed seed."""
         pop = _make_programs(20)
         fit = _make_lexicase_fitnesses(
-            [2.0, 1.0, 3.0, 0.5, 4.0, 5.0, 2.0, 2.5, 3.5, 1.5, 4.5, 0.1, 2.5, 3.2, 1.2, 0.2, 2.8, 3.8, 4.8, 5.0],
+            [
+                2.0,
+                1.0,
+                3.0,
+                0.5,
+                4.0,
+                5.0,
+                2.0,
+                2.5,
+                3.5,
+                1.5,
+                4.5,
+                0.1,
+                2.5,
+                3.2,
+                1.2,
+                0.2,
+                2.8,
+                3.8,
+                4.8,
+                5.0,
+            ],
             slice_key="s1",
         )
         config = _lexicase_config(population_size=20, elitism_count=3)

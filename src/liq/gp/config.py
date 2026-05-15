@@ -175,7 +175,10 @@ class SchedulerConfig(BaseModel, frozen=True):
             )
         if self.eval_batch_size < 1:
             raise ConfigurationError("scheduler.eval_batch_size must be >= 1")
-        if not math.isfinite(self.eval_timeout_seconds) or self.eval_timeout_seconds <= 0.0:
+        if (
+            not math.isfinite(self.eval_timeout_seconds)
+            or self.eval_timeout_seconds <= 0.0
+        ):
             raise ConfigurationError(
                 "scheduler.eval_timeout_seconds must be finite and > 0"
             )
@@ -227,9 +230,9 @@ class GPConfig(BaseModel, frozen=True):
     lexicase_nan_penalty: float = 1e6
 
     # Parsimony
-    parsimony_mode: Literal["lexicographic", "pareto", "linear", "disabled", "size_diversity"] = (
-        "lexicographic"
-    )
+    parsimony_mode: Literal[
+        "lexicographic", "pareto", "linear", "disabled", "size_diversity"
+    ] = "lexicographic"
     parsimony_coefficient: float = 0.001
 
     # Constant optimization
@@ -321,7 +324,9 @@ class GPConfig(BaseModel, frozen=True):
         if self.constant_opt_top_k <= 0.0 or self.constant_opt_top_k > 1.0:
             raise ConfigurationError("constant_opt_top_k must be in (0.0, 1.0]")
         if self.constant_opt_mode not in {"top_k", "probabilistic"}:
-            raise ConfigurationError("constant_opt_mode must be 'top_k' or 'probabilistic'")
+            raise ConfigurationError(
+                "constant_opt_mode must be 'top_k' or 'probabilistic'"
+            )
         if self.constant_opt_max_evals is not None and self.constant_opt_max_evals < 1:
             raise ConfigurationError("constant_opt_max_evals must be >= 1 when set")
         if self.constant_opt_max_time_seconds <= 0:
@@ -339,9 +344,7 @@ class GPConfig(BaseModel, frozen=True):
             self.lexicase_downsample_cases is not None
             and self.lexicase_downsample_cases < 1
         ):
-            raise ConfigurationError(
-                "lexicase_downsample_cases must be >= 1 when set"
-            )
+            raise ConfigurationError("lexicase_downsample_cases must be >= 1 when set")
 
         if self.lexicase_downsample_min_cases < 1:
             raise ConfigurationError("lexicase_downsample_min_cases must be >= 1")

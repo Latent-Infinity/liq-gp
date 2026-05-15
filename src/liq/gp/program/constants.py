@@ -8,8 +8,8 @@ AST (immutability preserved).
 from __future__ import annotations
 
 import logging
-import time
 import math
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -127,10 +127,9 @@ def _infer_constant_role(
             if sibling_role is not None and sibling_role.startswith("expert"):
                 return "expert_weight"
 
-    if (
-        isinstance(parent, (FunctionNode, ParameterizedNode))
-        and regime_roles.get(id(node)) in {"risk", "risk_scale"}
-    ):
+    if isinstance(parent, (FunctionNode, ParameterizedNode)) and regime_roles.get(
+        id(node)
+    ) in {"risk", "risk_scale"}:
         return "risk_scale"
 
     if id(node) in regime_roles:
@@ -144,12 +143,17 @@ def _infer_constant_role(
         if mapped_role == "detector":
             return "gate_threshold"
 
-    if isinstance(node, ConstantNode) and parent.primitive.name in {
-        "gt",
-        "ge",
-        "lt",
-        "le",
-    }:
+    if (
+        isinstance(node, ConstantNode)
+        and isinstance(parent, (FunctionNode, ParameterizedNode))
+        and parent.primitive.name
+        in {
+            "gt",
+            "ge",
+            "lt",
+            "le",
+        }
+    ):
         return "gate_threshold"
 
     return "other"

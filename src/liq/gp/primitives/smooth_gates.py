@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from liq.gp.primitives.registry import PrimitiveInfo, PrimitiveRegistry
+from liq.gp.primitives.registry import PrimitiveRegistry
 from liq.gp.types import Series
 
 

@@ -8,13 +8,14 @@ the core data types used throughout the library: :class:`ParamSpec`,
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
-import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from numpy.random import Generator
+
     from liq.gp.config import GPConfig
     from liq.gp.program.ast import Program
 
@@ -146,7 +147,9 @@ class ParamSpec:
                 raise TypeError(
                     "allowed_values must be int or float values when dtype is float"
                 )
-            if self.dtype is float and not all(isinstance(v, (int, float)) for v in cleaned):
+            if self.dtype is float and not all(
+                isinstance(v, (int, float)) for v in cleaned
+            ):
                 raise TypeError("allowed_values must be numeric when dtype is float")
             if self.default not in cleaned:
                 msg = f"default ({self.default}) must be in allowed_values"
@@ -154,7 +157,9 @@ class ParamSpec:
             return
 
         if self.min_value is None or self.max_value is None:
-            raise ValueError("min_value and max_value are required when allowed_values is None")
+            raise ValueError(
+                "min_value and max_value are required when allowed_values is None"
+            )
         if self.dtype is int and not isinstance(self.min_value, int):
             raise TypeError("min_value must be int when dtype is int")
         if self.dtype is int and isinstance(self.min_value, bool):
@@ -178,14 +183,16 @@ class ParamSpec:
             raise ValueError(msg)
         if not math.isfinite(self.min_value) or not math.isfinite(self.max_value):
             raise ValueError("min_value and max_value must be finite")
-        if self.dtype is int and not (isinstance(self.default, int) and not isinstance(self.default, bool)):
+        if self.dtype is int and not (
+            isinstance(self.default, int) and not isinstance(self.default, bool)
+        ):
             raise TypeError("default must be int when dtype is int")
-        if self.dtype is float and (not isinstance(self.default, (int, float)) or isinstance(self.default, bool)):
+        if self.dtype is float and (
+            not isinstance(self.default, (int, float)) or isinstance(self.default, bool)
+        ):
             raise TypeError("default must be int or float when dtype is float")
         if not self.min_value <= self.default <= self.max_value:
-            msg = (
-                f"default ({self.default}) must be within [{self.min_value}, {self.max_value}]"
-            )
+            msg = f"default ({self.default}) must be within [{self.min_value}, {self.max_value}]"
             raise ValueError(msg)
 
     @staticmethod
@@ -240,7 +247,14 @@ class SelectionContext:
 
 
 ParentSourceFn = Callable[
-    ["list[Program]", "list[FitnessResult]", "GPConfig", "Generator", int, "SelectionContext"],
+    [
+        "list[Program]",
+        "list[FitnessResult]",
+        "GPConfig",
+        "Generator",
+        int,
+        "SelectionContext",
+    ],
     "list[Program]",
 ]
 

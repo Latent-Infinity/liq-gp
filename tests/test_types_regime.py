@@ -15,8 +15,8 @@ from liq.gp import (
     Program,
     RegimeModelContractError,
     RegimePrimitiveContractError,
-    TerminalNode,
     Series,
+    TerminalNode,
     compile_regime_model_to_program,
 )
 from liq.gp.program.eval import evaluate
@@ -170,7 +170,9 @@ class TestRegimeCompilerContracts:
 
     def test_invalid_model_object_is_rejected(self) -> None:
         registry = _build_registry()
-        with pytest.raises(RegimeModelContractError, match="protocol-compatible object"):
+        with pytest.raises(
+            RegimeModelContractError, match="protocol-compatible object"
+        ):
             compile_regime_model_to_program({"bad": "model"}, registry)
 
     def test_missing_required_primitive_fails(self) -> None:
@@ -186,7 +188,9 @@ class TestRegimeCompilerContracts:
     def test_output_type_mismatches_raise_model_contract_errors(self) -> None:
         registry = _build_registry()
         bad_detector = _model(expert_names=("e1",), detector=_block("det", Series))
-        with pytest.raises(RegimeModelContractError, match="detector program must output BoolSeries"):
+        with pytest.raises(
+            RegimeModelContractError, match="detector program must output BoolSeries"
+        ):
             compile_regime_model_to_program(bad_detector, registry)
 
     def test_weight_length_mismatch_raises(self) -> None:

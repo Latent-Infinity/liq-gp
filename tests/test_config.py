@@ -176,15 +176,24 @@ class TestGPConfigValidation:
             GPConfig(constant_opt_role_schedule={"gate_eval_interval": 0})
         with pytest.raises(ConfigurationError, match="constant_opt_expert_interval"):
             GPConfig(
-                constant_opt_role_schedule={"gate_eval_interval": 1, "expert_eval_interval": 0}
+                constant_opt_role_schedule={
+                    "gate_eval_interval": 1,
+                    "expert_eval_interval": 0,
+                }
             )
         with pytest.raises(ConfigurationError, match="constant_opt_risk_interval"):
             GPConfig(
-                constant_opt_role_schedule={"gate_eval_interval": 1, "risk_eval_interval": 0}
+                constant_opt_role_schedule={
+                    "gate_eval_interval": 1,
+                    "risk_eval_interval": 0,
+                }
             )
         with pytest.raises(ConfigurationError, match="constant_opt_other_interval"):
             GPConfig(
-                constant_opt_role_schedule={"gate_eval_interval": 1, "other_eval_interval": 0}
+                constant_opt_role_schedule={
+                    "gate_eval_interval": 1,
+                    "other_eval_interval": 0,
+                }
             )
 
     def test_constant_opt_role_bounds_enable_unbounded_flag(self) -> None:
@@ -304,99 +313,6 @@ class TestGPConfigValidation:
             SchedulerConfig(memory_budget_mb=64)
         with pytest.raises(ConfigurationError, match="scheduler.max_cpu_workers"):
             SchedulerConfig(max_cpu_workers=0)
-
-
-class TestSeedInjectionConfigValidation:
-    """SeedInjectionConfig validation rules."""
-
-    def test_valid_defaults(self) -> None:
-        cfg = SeedInjectionConfig(interval=5)
-        assert cfg.interval == 5
-        assert cfg.count == 1
-        assert cfg.method == "variation"
-        assert cfg.method == "variation"  # default method confirmed above
-
-    def test_frozen(self) -> None:
-        cfg = SeedInjectionConfig(interval=5)
-        with pytest.raises(Exception):  # noqa: B017, PT011
-            cfg.interval = 10  # type: ignore[misc]
-
-    def test_all_methods_valid(self) -> None:
-        for method in ("direct", "variation", "ramped"):
-            cfg = SeedInjectionConfig(interval=1, method=method)
-            assert cfg.method == method
-
-    def test_interval_zero_rejected(self) -> None:
-        with pytest.raises(ConfigurationError, match="interval"):
-            SeedInjectionConfig(interval=0)
-
-    def test_interval_negative_rejected(self) -> None:
-        with pytest.raises(ConfigurationError, match="interval"):
-            SeedInjectionConfig(interval=-1)
-
-    def test_count_zero_rejected(self) -> None:
-        with pytest.raises(ConfigurationError, match="count"):
-            SeedInjectionConfig(interval=5, count=0)
-
-    def test_count_negative_rejected(self) -> None:
-        with pytest.raises(ConfigurationError, match="count"):
-            SeedInjectionConfig(interval=5, count=-1)
-
-    def test_count_large_valid_standalone(self) -> None:
-        # SeedInjectionConfig alone doesn't know population_size
-        cfg = SeedInjectionConfig(interval=1, count=100)
-        assert cfg.count == 100
-
-
-class TestGPConfigSeedInjection:
-    """GPConfig cross-field validation for seed_injection."""
-
-    def test_default_is_none(self) -> None:
-        cfg = GPConfig()
-        assert cfg.seed_injection is None
-
-    def test_valid_seed_injection(self) -> None:
-        cfg = GPConfig(
-            seed_injection=SeedInjectionConfig(interval=5, count=3),
-        )
-        assert cfg.seed_injection is not None
-        assert cfg.seed_injection.interval == 5
-        assert cfg.seed_injection.count == 3
-
-    def test_count_exceeds_replaceable_slots(self) -> None:
-        # population_size=10, elitism_count=5 → max_replaceable=5
-        with pytest.raises(ConfigurationError, match="seed_injection.count"):
-            GPConfig(
-                population_size=10,
-                elitism_count=5,
-                seed_injection=SeedInjectionConfig(interval=1, count=6),
-            )
-
-    def test_count_equals_replaceable_slots(self) -> None:
-        # Boundary: count == population_size - elitism_count should be valid
-        cfg = GPConfig(
-            population_size=10,
-            elitism_count=5,
-            seed_injection=SeedInjectionConfig(interval=1, count=5),
-        )
-        assert cfg.seed_injection is not None
-        assert cfg.seed_injection.count == 5
-
-    def test_seed_injection_with_zero_elitism(self) -> None:
-        cfg = GPConfig(
-            population_size=10,
-            elitism_count=0,
-            seed_injection=SeedInjectionConfig(interval=10, count=10),
-        )
-        assert cfg.seed_injection is not None
-        assert cfg.seed_injection.count == 10
-
-    def test_ramped_method_valid(self) -> None:
-        cfg = GPConfig(
-            seed_injection=SeedInjectionConfig(interval=5, method="ramped"),
-        )
-        assert cfg.seed_injection is not None
-        assert cfg.seed_injection.method == "ramped"
 
 
 class TestSeedInjectionConfigValidation:

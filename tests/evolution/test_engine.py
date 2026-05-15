@@ -342,11 +342,15 @@ class TestEvolveParentSourceHook:
 
         assert contexts
         assert all(
-            context.fronts is not None and context.ranks is not None and context.crowding is not None
+            context.fronts is not None
+            and context.ranks is not None
+            and context.crowding is not None
             for context in contexts
         )
         assert all(len(context.ranks) == config.population_size for context in contexts)
-        assert all(len(context.crowding) == config.population_size for context in contexts)
+        assert all(
+            len(context.crowding) == config.population_size for context in contexts
+        )
 
     def test_parent_source_length_mismatch_raises(self) -> None:
         from liq.gp.evolution.engine import evolve
@@ -365,7 +369,9 @@ class TestEvolveParentSourceHook:
         ) -> list[Program]:
             return list(population[: max(target_size - 1, 0)])
 
-        with pytest.raises(ValueError, match="parent_source must return exactly target_size parents"):
+        with pytest.raises(
+            ValueError, match="parent_source must return exactly target_size parents"
+        ):
             evolve(
                 reg,
                 config,
@@ -374,7 +380,9 @@ class TestEvolveParentSourceHook:
                 parent_source=bad_parent_source,
             )
 
-    def test_default_path_uses_engine_select(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+    def test_default_path_uses_engine_select(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import liq.gp.evolution.engine as engine_module
         from liq.gp.evolution.engine import evolve
 
@@ -413,10 +421,12 @@ class TestEvolveParentSourceHook:
         )
         assert calls["select"] == config.generations
 
-    def test_parent_source_can_return_duplicates(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+    def test_parent_source_can_return_duplicates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """parent_source may return duplicate parents and engine passes them through."""
-        from liq.gp.evolution.engine import evolve
         import liq.gp.evolution.engine as engine_module
+        from liq.gp.evolution.engine import evolve
 
         reg = _make_registry()
         config = _make_config(
@@ -481,7 +491,10 @@ class TestEvolveParentSourceHook:
         assert selected_parent_ids[0][1] == selected_parent_ids[0][2]
         assert crossover_pairs[0] == (expected_parent_ids[0], expected_parent_ids[1])
         if len(crossover_pairs) > 1:
-            assert crossover_pairs[1] == (expected_parent_ids[2], expected_parent_ids[3])
+            assert crossover_pairs[1] == (
+                expected_parent_ids[2],
+                expected_parent_ids[3],
+            )
 
     def test_parent_source_deterministic(self) -> None:
         """Reusing the same seeded configuration with deterministic parent_source is reproducible."""
@@ -529,6 +542,7 @@ class TestEvolveParentSourceHook:
         assert [stats.best_fitness for stats in result1.fitness_history] == [
             stats.best_fitness for stats in result2.fitness_history
         ]
+
 
 # ===========================================================================
 # Fitness improvement
@@ -647,7 +661,9 @@ class TestGenerationStats:
 class TestConstantOptimizationBudget:
     """Constant-optimization budgets are enforced per generation."""
 
-    def test_constant_optimization_budget_passed_to_selector(self, monkeypatch: "pytest.MonkeyPatch") -> None:
+    def test_constant_optimization_budget_passed_to_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from liq.gp.evolution.engine import evolve
 
         reg = _make_registry()
@@ -675,7 +691,9 @@ class TestConstantOptimizationBudget:
                 max_evals if max_evals is not None else config.constant_opt_max_evals
             )
             select_calls.append(effective_budget)
-            budget = effective_budget if effective_budget is not None else len(population)
+            budget = (
+                effective_budget if effective_budget is not None else len(population)
+            )
             return list(range(min(budget, len(population))))
 
         def fake_optimize_constants(

@@ -413,7 +413,9 @@ class TestParsimonySizeDiversity:
         )
         result = apply_parsimony(fits, pop, config)
         # Larger primary fitness should remain larger before parsimony reward.
-        assert result[2].objectives[0] > result[1].objectives[0] > result[0].objectives[0]
+        assert (
+            result[2].objectives[0] > result[1].objectives[0] > result[0].objectives[0]
+        )
 
     def test_size_diversity_is_compatible_with_nsga2(self) -> None:
         """size_diversity mode appends bonus objective without breaking NSGA-II fitness shape."""
@@ -437,7 +439,10 @@ class TestParsimonySizeDiversity:
         result = apply_parsimony(fits, pop, config)
         assert len(result) == 3
         assert all(len(fr.objectives) == 3 for fr in result)
-        assert all(fr.objectives[:2] == fit.objectives for fr, fit in zip(result, fits, strict=True))
+        assert all(
+            fr.objectives[:2] == fit.objectives
+            for fr, fit in zip(result, fits, strict=True)
+        )
         assert all(
             fr.metadata["raw_objectives"] == fit.objectives
             for fr, fit in zip(result, fits, strict=True)
