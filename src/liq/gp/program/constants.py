@@ -506,7 +506,7 @@ def _run_optimization(
         result = evaluator.evaluate([candidate], context)[0]
         fitness_value = result.objectives[0]
         loss = -fitness_value if maximize else fitness_value
-        return (1e18 if np.isnan(loss) else float(loss)), result
+        return (1e18 if not np.isfinite(loss) else float(loss)), result
 
     # Baseline: the unperturbed program with role bounds applied.  Bounds are
     # a hard constraint, so the baseline may already differ from the input;

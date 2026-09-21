@@ -163,6 +163,11 @@ class TestGPConfigValidation:
         with pytest.raises(ConfigurationError, match="constant_opt_max_time"):
             GPConfig(constant_opt_max_time_seconds=0.0)
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+    def test_constant_opt_max_time_must_be_finite(self, value: float) -> None:
+        with pytest.raises(ConfigurationError, match="constant_opt_max_time"):
+            GPConfig(constant_opt_max_time_seconds=value)
+
     def test_constant_opt_mode_invalid(self) -> None:
         with pytest.raises(ValidationError, match="constant_opt_mode"):
             GPConfig(constant_opt_mode="invalid")

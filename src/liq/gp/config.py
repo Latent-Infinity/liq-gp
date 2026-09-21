@@ -363,7 +363,9 @@ class GPConfig(BaseModel, frozen=True):
             )
         if self.constant_opt_interval < 1:
             raise ConfigurationError("constant_opt_interval must be >= 1")
-        if self.constant_opt_max_time_seconds <= 0:
+        if not math.isfinite(self.constant_opt_max_time_seconds) or (
+            self.constant_opt_max_time_seconds <= 0
+        ):
             raise ConfigurationError("constant_opt_max_time_seconds must be > 0")
 
         # NSGA-II requires >= 2 objectives
