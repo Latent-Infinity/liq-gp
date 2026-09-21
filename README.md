@@ -76,17 +76,25 @@ Custom types can be registered via `GPType.register_type()`.
 
 Each generation follows this pipeline:
 
-1. **Evaluate** -- pass full population to your `FitnessEvaluator`
-2. **Parsimony pressure** -- penalize bloat (lexicographic, Pareto, or linear)
-3. **Statistics** -- compute generation stats, invoke callback
-4. **Early stopping** -- check stall count against patience
-5. **Elitism** -- preserve top individuals unchanged
-6. **Selection** -- tournament or NSGA-II
-7. **Variation** -- crossover and mutation operators
-8. **Simplification** -- algebraic rewrite rules (optional)
-9. **Constant optimization** -- Nelder-Mead on top-K programs (optional)
-10. **Seed injection** -- replace worst individuals with seed-derived programs (optional)
+1. **Evaluate** -- pass the full population to your `FitnessEvaluator` (the
+   only full-population evaluation of the generation)
+2. **Constant optimization** -- L-BFGS-B / Nelder-Mead on top-K programs
+   (optional); only programs that improved are re-evaluated, as one batch
+3. **Parsimony pressure** -- penalize bloat (lexicographic, Pareto, or linear)
+4. **Seed injection** -- replace worst non-elite individuals with seed-derived
+   programs (optional); only the injected programs are evaluated
+5. **Statistics** -- compute generation stats, invoke callback
+6. **Early stopping** -- check stall count against patience
+7. **Elitism** -- preserve top individuals unchanged
+8. **Selection** -- tournament, NSGA-II, or (ε-)lexicase
+9. **Variation** -- crossover and mutation operators
+10. **Simplification** -- algebraic rewrite rules (optional)
 11. **Semantic deduplication** -- remove output-equivalent programs
+
+Steps 7-11 build the next generation's population and are skipped after the
+final generation, so `generations=N` means exactly `N` full-population
+evaluations and `N-1` rounds of selection/variation; `result.best_program`
+comes from the population described by `fitness_history[-1]`.
 
 ### Parallelism
 
@@ -109,8 +117,12 @@ you match the strategy to your workload.
 ```python
 import numpy as np
 from liq.gp import (
-    GPConfig, PrimitiveRegistry, Series,
-    FitnessResult, evaluate, evolve,
+    GPConfig,
+    PrimitiveRegistry,
+    Series,
+    FitnessResult,
+    evaluate,
+    evolve,
 )
 
 # 1. Build a primitive registry
@@ -121,15 +133,28 @@ registry = PrimitiveRegistry()
 registry.register("x", lambda: None, input_types=(), output_type=Series)
 
 # Functions operate on child outputs (NumPy arrays in, NumPy array out).
-registry.register("add", lambda a, b: a + b,
-                  category="arithmetic",
-                  input_types=(Series, Series), output_type=Series)
-registry.register("mul", lambda a, b: a * b,
-                  category="arithmetic",
-                  input_types=(Series, Series), output_type=Series)
-registry.register("neg", lambda a: -a,
-                  category="arithmetic",
-                  input_types=(Series,), output_type=Series)
+registry.register(
+    "add",
+    lambda a, b: a + b,
+    category="arithmetic",
+    input_types=(Series, Series),
+    output_type=Series,
+)
+registry.register(
+    "mul",
+    lambda a, b: a * b,
+    category="arithmetic",
+    input_types=(Series, Series),
+    output_type=Series,
+)
+registry.register(
+    "neg",
+    lambda a: -a,
+    category="arithmetic",
+    input_types=(Series,),
+    output_type=Series,
+)
+
 
 # 2. Implement a fitness evaluator
 class RegressionEvaluator:
@@ -147,15 +172,20 @@ class RegressionEvaluator:
                 results.append(FitnessResult(objectives=(-1e10,)))
         return results
 
+
 # 3. Prepare data: y = x^2 + 2x + 1
 x = np.linspace(-5, 5, 200)
-target = x ** 2 + 2 * x + 1
+target = x**2 + 2 * x + 1
 context = {"x": x}
 
 # 4. Configure and evolve
 config = GPConfig(population_size=300, generations=40, seed=42)
-result = evolve(registry=registry, config=config,
-                evaluator=RegressionEvaluator(target), context=context)
+result = evolve(
+    registry=registry,
+    config=config,
+    evaluator=RegressionEvaluator(target),
+    context=context,
+)
 
 # 5. Use the result
 best = result.best_program
@@ -209,7 +239,9 @@ construction, or deserialized JSON:
 
 ```python
 # Warm start from a previous run's best program
-result1 = evolve(registry=registry, config=config1, evaluator=evaluator, context=context)
+result1 = evolve(
+    registry=registry, config=config1, evaluator=evaluator, context=context
+)
 
 result2 = evolve(
     registry=registry,
@@ -221,6 +253,7 @@ result2 = evolve(
 
 # Hand-craft a seed program
 from liq.gp import FunctionNode, TerminalNode, ConstantNode
+
 manual_seed = FunctionNode(
     primitive=registry.get("add"),
     children=(TerminalNode(name="x", output_type=Series), ConstantNode(value=1.0)),
@@ -258,8 +291,8 @@ config = GPConfig(
     population_size=300,
     generations=100,
     seed_injection=SeedInjectionConfig(
-        interval=10,         # inject every 10 generations
-        count=5,             # replace 5 worst individuals per cycle
+        interval=10,  # inject every 10 generations
+        count=5,  # replace 5 worst individuals per cycle
         method="variation",  # "direct", "variation", or "ramped"
     ),
 )
@@ -299,6 +332,7 @@ Pass a callback to `evolve()` to receive `GenerationStats` each generation:
 ```python
 from liq.gp import GenerationStats
 
+
 def on_generation(stats: GenerationStats) -> None:
     print(
         f"Gen {stats.generation:3d}  "
@@ -307,6 +341,7 @@ def on_generation(stats: GenerationStats) -> None:
         f"unique={stats.unique_semantics_ratio:.0%}  "
         f"pareto={stats.pareto_front_size}"
     )
+
 
 result = evolve(..., callback=on_generation)
 ```
@@ -318,8 +353,8 @@ Programs serialize to JSON-compatible dicts with schema versioning:
 ```python
 from liq.gp import serialize, deserialize
 
-data = serialize(program)                  # -> dict with schema_version
-restored = deserialize(data, registry)     # requires registry for primitive lookup
+data = serialize(program)  # -> dict with schema_version
+restored = deserialize(data, registry)  # requires registry for primitive lookup
 ```
 
 ## Configuration Reference
@@ -340,12 +375,17 @@ restored = deserialize(data, registry)     # requires registry for primitive loo
 | `hoist_mutation_rate` | 0.05 | Hoist mutation probability |
 | `tournament_size` | 5 | Tournament selection size |
 | `elitism_count` | 5 | Number of elites preserved |
-| `selection_mode` | "tournament" | "tournament" or "nsga2" |
-| `parsimony_mode` | "lexicographic" | "lexicographic", "pareto", "linear", or "disabled" |
-| `parsimony_coefficient` | 0.001 | Coefficient for linear parsimony |
+| `selection_mode` | "tournament" | "tournament", "nsga2", "lexicase", or "lexicase_eps" |
+| `parsimony_mode` | "lexicographic" | "lexicographic", "pareto", "linear", "size_diversity", or "disabled" |
+| `parsimony_coefficient` | 0.001 | Coefficient for linear parsimony (applied against the primary objective's direction) |
+| `grow_terminal_probability` | 0.3 | P(terminal) per depth in `grow` trees; `None` = registry-proportional. `0.3` is historical, not tuned: `0.5` measured ~15-20% smaller programs and ~26% lower wall clock with no detected quality change |
 | `constant_opt_enabled` | True | Enable constant optimization |
 | `constant_opt_top_k` | 0.1 | Fraction of population to optimize |
-| `constant_opt_max_iter` | 50 | Max Nelder-Mead iterations |
+| `constant_opt_mode` | "top_k" | "top_k" or "probabilistic" candidate selection |
+| `constant_opt_interval` | 1 | Run constant optimization every N generations (a further cost/quality dial) |
+| `constant_opt_max_evals` | None | Max *programs* optimized per generation |
+| `constant_opt_max_program_evals` | None | Max evaluator calls spent on one program. Setting 50 measured ~58% fewer evaluator calls at a real, modest quality cost |
+| `constant_opt_max_iter` | 50 | Max optimizer iterations |
 | `constant_opt_max_time_seconds` | 1.0 | Wall-clock time limit per program |
 | `simplification_enabled` | True | Enable algebraic simplification |
 | `semantic_ref_size` | 50 | Reference dataset size for fingerprinting |
@@ -374,23 +414,48 @@ All public items are importable from `liq.gp`:
 ```python
 from liq.gp import (
     # Configuration
-    GPConfig, FitnessConfig, SeedInjectionConfig,
+    GPConfig,
+    FitnessConfig,
+    SeedInjectionConfig,
     # Type system
-    Series, BoolSeries, Scalar, Int,
+    Series,
+    BoolSeries,
+    Scalar,
+    Int,
     # Data types
-    ParamSpec, FitnessResult, GenerationStats, EvolutionResult,
+    ParamSpec,
+    FitnessResult,
+    GenerationStats,
+    EvolutionResult,
     # Primitives
-    PrimitiveRegistry, PrimitiveInfo,
+    PrimitiveRegistry,
+    PrimitiveInfo,
     # AST nodes
-    Program, TerminalNode, ConstantNode, FunctionNode, ParameterizedNode,
+    Program,
+    TerminalNode,
+    ConstantNode,
+    FunctionNode,
+    ParameterizedNode,
     # Functions
-    evaluate, simplify, optimize_constants, serialize, deserialize,
-    evolve, validate_seed_programs, initialize_seeded_population, inject_seeds,
+    evaluate,
+    simplify,
+    optimize_constants,
+    serialize,
+    deserialize,
+    evolve,
+    validate_seed_programs,
+    initialize_seeded_population,
+    inject_seeds,
     # Protocols
     FitnessEvaluator,
     # Errors
-    GPError, PrimitiveError, TypeCheckError,
-    EvaluationError, EvolutionError, SerializationError, ConfigurationError,
+    GPError,
+    PrimitiveError,
+    TypeCheckError,
+    EvaluationError,
+    EvolutionError,
+    SerializationError,
+    ConfigurationError,
 )
 ```
 

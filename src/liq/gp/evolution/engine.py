@@ -12,7 +12,6 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import replace
-from inspect import signature
 from typing import Literal, cast
 
 import numpy as np
@@ -36,6 +35,7 @@ from liq.gp.evolution.operators import (
 )
 from liq.gp.evolution.selection import (
     compute_nsga2_rankings,
+    get_elite_indices,
     get_elites,
     non_dominated_sort,
     select,
@@ -43,6 +43,7 @@ from liq.gp.evolution.selection import (
 from liq.gp.primitives.registry import PrimitiveRegistry
 from liq.gp.program.ast import Program
 from liq.gp.program.simplify import simplify
+from liq.gp.protocols import FitnessEvaluator
 from liq.gp.types import (
     EvolutionResult,
     FitnessResult,
@@ -57,7 +58,7 @@ logger = logging.getLogger(__name__)
 def evolve(
     registry: PrimitiveRegistry,
     config: GPConfig,
-    evaluator: object,
+    evaluator: FitnessEvaluator,
     context: dict[str, np.ndarray],
     *,
     fitness_config: FitnessConfig | None = None,
@@ -70,8 +71,8 @@ def evolve(
     Args:
         registry: Primitive registry for tree construction.
         config: GP configuration controlling all parameters.
-        evaluator: Object with ``evaluate(programs, context)`` returning
-            ``list[FitnessResult]``.
+        evaluator: Object satisfying the :class:`~liq.gp.FitnessEvaluator`
+            protocol (``evaluate(programs, context) -> list[FitnessResult]``).
         context: Evaluation context mapping names to arrays.
         fitness_config: Optional override for ``config.fitness``. This supports
             the consumer integration pattern where fitness objectives are
@@ -139,6 +140,7 @@ def evolve(
     best_stall_count = 0
     prev_best: tuple[float, ...] | None = None
     injection_event_counter = 0
+    final_fitnesses: list[FitnessResult] | None = None
 
     for gen in range(config.generations):
         # --- Determine evaluation context (batch vs full) ---
@@ -148,24 +150,68 @@ def evolve(
         else:
             eval_context = _batch_context(context, batch_size, rng)
 
-        # --- Evaluate ---
-        fitnesses = _evaluate_population(
+        # --- Evaluate (the single full-population pass of this generation) ---
+        raw_fitnesses, scheduler_metrics = _evaluate_population(
             population,
             evaluator,
             eval_context,
             config,
         )
-        fitnesses, scheduler_metrics = fitnesses
 
-        # --- Apply parsimony pressure ---
-        fitnesses = apply_parsimony(fitnesses, population, config)
+        # --- Constant optimization on the evaluated population ---
+        if config.constant_opt_enabled:
+            population, raw_fitnesses = _optimize_constants_stage(
+                population,
+                raw_fitnesses,
+                evaluator,
+                eval_context,
+                config,
+                rng,
+                gen,
+            )
 
-        # --- Reuse non-dominated sorting for NSGA-II ---
-        fronts = None
-        ranks = None
-        crowding = None
-        if config.selection_mode == "nsga2":
-            fronts, ranks, crowding = compute_nsga2_rankings(fitnesses, config)
+        # --- Apply parsimony pressure + NSGA-II rankings ---
+        fitnesses = apply_parsimony(raw_fitnesses, population, config)
+        fronts, ranks, crowding = _rankings(fitnesses, config)
+
+        # Stall detection measures *search* progress, so it reads the
+        # population before injection: re-injecting a known seed is not a
+        # discovery and must not reset the patience counter.
+        search_best = _best_objectives(fitnesses, config)
+
+        # --- Seed injection: replace worst non-elites, evaluate only them ---
+        injected_count = 0
+        if config.seed_injection is not None:
+            population, raw_fitnesses, injected_count = _inject_seeds_stage(
+                population,
+                raw_fitnesses,
+                fitnesses,
+                evaluator,
+                eval_context,
+                config,
+                registry,
+                rng,
+                gen,
+                seed_programs,
+                injection_event=injection_event_counter,
+                ranks=ranks,
+                crowding=crowding,
+                protected=set(
+                    get_elite_indices(
+                        population,
+                        fitnesses,
+                        config,
+                        fronts=fronts,
+                        ranks=ranks,
+                        crowding=crowding,
+                    )
+                ),
+            )
+            if injected_count > 0:
+                injection_event_counter += 1
+                fitnesses = apply_parsimony(raw_fitnesses, population, config)
+                fronts, ranks, crowding = _rankings(fitnesses, config)
+
         selection_context = SelectionContext(
             fronts=fronts, ranks=ranks, crowding=crowding
         )
@@ -179,17 +225,13 @@ def evolve(
             config,
             pareto_front_size=pareto_front_size,
         )
-        fingerprints = _compute_semantic_fingerprints(
-            population,
-            ref_context,
-            config.semantic_precision,
-        )
         stats = replace(
             stats,
-            unique_semantics_ratio=_compute_unique_semantics_ratio_from_fingerprints(
-                fingerprints
+            unique_semantics_ratio=_compute_unique_semantics_ratio(
+                population, ref_context, config
             ),
             scheduler_metrics=scheduler_metrics,
+            injected_count=injected_count,
         )
 
         # --- Early stopping (deferred break) ---
@@ -198,16 +240,26 @@ def evolve(
             if prev_best is not None:
                 improvement = _primary_improvement(
                     previous=prev_best[0],
-                    current=stats.best_fitness[0],
+                    current=search_best[0],
                     direction=config.fitness.objective_directions[0],
                 )
                 if improvement < config.early_stop_threshold:
                     best_stall_count += 1
                 else:
                     best_stall_count = 0
-            prev_best = stats.best_fitness
+            prev_best = search_best
             if best_stall_count >= config.early_stop_patience:
                 should_stop = True
+
+        # --- Generation reporting ---
+        fitness_history.append(stats)
+        if callback is not None:
+            callback(stats)
+
+        # --- Stop before breeding a population nobody will evaluate ---
+        if should_stop or gen == config.generations - 1:
+            final_fitnesses = fitnesses if eval_context is context else None
+            break
 
         # --- Elitism ---
         elites = get_elites(
@@ -245,209 +297,31 @@ def evolve(
                 raise ValueError(msg)
 
         # --- Variation (crossover + mutation) ---
-        offspring: list[Program] = []
-        pi = 0  # parent index
-
-        while len(offspring) < target_size:
-            op = select_operator(config, rng)
-
-            if op == "crossover":
-                p1 = parents[pi % len(parents)]
-                p2 = parents[(pi + 1) % len(parents)]
-                pi += 2
-                if config.crossover_mode == "module_preserving":
-                    child1, child2 = module_preserving_crossover(
-                        p1,
-                        p2,
-                        registry,
-                        config.max_depth,
-                        rng,
-                        max_attempts=config.max_crossover_attempts,
-                    )
-                else:
-                    child1, child2 = subtree_crossover(
-                        p1,
-                        p2,
-                        registry,
-                        config.max_depth,
-                        rng,
-                        max_attempts=config.max_crossover_attempts,
-                    )
-                for child in (child1, child2):
-                    if enforce_constraints(child, config):
-                        offspring.append(child)
-            elif op == "subtree_mutation":
-                parent = parents[pi % len(parents)]
-                pi += 1
-                child = subtree_mutation(parent, registry, config.max_depth, rng)
-                if enforce_constraints(child, config):
-                    offspring.append(child)
-            elif op == "point_mutation":
-                parent = parents[pi % len(parents)]
-                pi += 1
-                child = point_mutation(parent, registry, rng)
-                if enforce_constraints(child, config):
-                    offspring.append(child)
-            elif op == "parameter_mutation":
-                parent = parents[pi % len(parents)]
-                pi += 1
-                child = parameter_mutation(parent, rng)
-                if enforce_constraints(child, config):
-                    offspring.append(child)
-            elif op == "hoist_mutation":
-                parent = parents[pi % len(parents)]
-                pi += 1
-                child = hoist_mutation(parent, rng)
-                if enforce_constraints(child, config):
-                    offspring.append(child)
-            else:
-                # Reproduction: copy parent unchanged
-                parent = parents[pi % len(parents)]
-                pi += 1
-                offspring.append(parent)
-
-        # Trim to exact target size
-        offspring = offspring[:target_size]
+        offspring = _breed(parents, target_size, registry, config, rng)
 
         # --- Simplification ---
         if config.simplification_enabled:
             offspring = [simplify(p) for p in offspring]
 
-        # --- Combine elites + offspring ---
-        population = list(elites) + offspring
-
-        # --- Constant optimization ---
-        if config.constant_opt_enabled:
-            from liq.gp.program.constants import (
-                optimize_constants,
-                select_for_optimization,
-            )
-
-            constant_opt_budget = config.constant_opt_max_evals
-
-            # Re-evaluate after combination
-            fitnesses = _evaluate_population(
-                population,
-                evaluator,
-                context,
-                config,
-            )
-            fitnesses, _ = fitnesses
-            select_for_optimization_sig = signature(select_for_optimization)
-            select_kwargs = {}
-            if "generation" in select_for_optimization_sig.parameters:
-                select_kwargs["generation"] = gen
-            if "rng" in select_for_optimization_sig.parameters:
-                select_kwargs["rng"] = rng
-            if "max_evals" in select_for_optimization_sig.parameters:
-                select_kwargs["max_evals"] = constant_opt_budget
-
-            indices = select_for_optimization(
-                population,
-                fitnesses,
-                config,
-                **select_kwargs,
-            )
-            for idx in indices:
-                population[idx] = optimize_constants(
-                    population[idx],
-                    evaluator,
-                    context,
-                    config,
-                    rng,
-                )
-            if indices:
-                fingerprints = _compute_semantic_fingerprints(
-                    population,
-                    ref_context,
-                    config.semantic_precision,
-                )
-
-        # --- Seed injection ---
-        # NOTE: Stats were computed above from the evaluated population.
-        # Injection replaces worst individuals for the *next* generation;
-        # injected_count is patched into stats as additive metadata.
-        injected_count = 0
-        if config.seed_injection is not None:
-            from liq.gp.evolution.injection import inject_seeds
-
-            # Always re-evaluate to ensure fitnesses reflect current population
-            # state (including any constant optimization modifications).
-            fitnesses = _evaluate_population(
-                population,
-                evaluator,
-                context,
-                config,
-            )
-            fitnesses, _ = fitnesses
-            # Recompute NSGA-II rankings for the new population
-            inj_ranks: list[int] | None = None
-            inj_crowding: list[float] | None = None
-            if config.selection_mode == "nsga2":
-                _, inj_ranks, inj_crowding = compute_nsga2_rankings(fitnesses, config)
-            population, injected_count = inject_seeds(
-                population,
-                fitnesses,
-                seed_programs,
-                config,
-                registry,
-                rng,
-                gen,
-                ranks=inj_ranks,
-                crowding=inj_crowding,
-                elite_indices=set(range(len(elites))),
-                injection_event=injection_event_counter,
-                output_type=population[0].output_type if population else None,
-            )
-            if injected_count > 0:
-                injection_event_counter += 1
-            # Recompute fingerprints if injection changed the population
-            if injected_count > 0:
-                fingerprints = _compute_semantic_fingerprints(
-                    population,
-                    ref_context,
-                    config.semantic_precision,
-                )
-
-        # --- Semantic deduplication ---
+        # --- Combine elites + offspring, then semantic deduplication ---
         population, _ = deduplicate_population(
-            population,
+            list(elites) + offspring,
             ref_context,
             registry,
             config,
             rng,
-            fingerprints=fingerprints,
         )
 
-        # --- Generation reporting ---
-        if injected_count > 0:
-            stats = replace(stats, injected_count=injected_count)
-        fitness_history.append(stats)
-        if callback is not None:
-            callback(stats)
-
-        # --- Deferred early-stop break ---
-        if should_stop:
-            break
-
-    # --- Final evaluation for result extraction ---
-    fitnesses = _evaluate_population(
-        population,
-        evaluator,
-        context,
-        config,
-    )
-    fitnesses, _ = fitnesses
-    fitnesses = apply_parsimony(fitnesses, population, config)
+    # --- Final evaluation only when the loop left no full-context fitnesses ---
+    if final_fitnesses is None:
+        raw_fitnesses, _ = _evaluate_population(population, evaluator, context, config)
+        final_fitnesses = apply_parsimony(raw_fitnesses, population, config)
 
     # Find best program (by first objective, respecting direction)
-    best_idx = _find_best(fitnesses, config)
+    best_idx = _find_best(final_fitnesses, config)
 
     # Compute Pareto front
-    directions = _effective_directions(
-        config, len(fitnesses[0].objectives) if fitnesses else 0
-    )
-    fronts = non_dominated_sort(fitnesses, directions)
+    fronts, _, _ = _rankings(final_fitnesses, config)
     pareto_front = [population[i] for i in fronts[0]] if fronts else []
 
     return EvolutionResult(
@@ -456,6 +330,208 @@ def evolve(
         fitness_history=fitness_history,
         config=config,
     )
+
+
+def _rankings(
+    fitnesses: list[FitnessResult],
+    config: GPConfig,
+) -> tuple[list[list[int]], list[int] | None, list[float] | None]:
+    """Return Pareto fronts, plus NSGA-II ranks/crowding when that mode is on."""
+    if config.selection_mode == "nsga2":
+        return compute_nsga2_rankings(fitnesses, config)
+    directions = _effective_directions(
+        config, len(fitnesses[0].objectives) if fitnesses else 0
+    )
+    return non_dominated_sort(fitnesses, directions), None, None
+
+
+def _optimize_constants_stage(
+    population: list[Program],
+    fitnesses: list[FitnessResult],
+    evaluator: FitnessEvaluator,
+    context: dict[str, np.ndarray],
+    config: GPConfig,
+    rng: np.random.Generator,
+    generation: int,
+) -> tuple[list[Program], list[FitnessResult]]:
+    """Optimize constants of the selected programs and refresh their fitness.
+
+    The optimizer already evaluated the constants it returns, so its fitness
+    is reused directly; only programs it changed without reporting a fitness
+    need a follow-up evaluation.
+    """
+    from liq.gp.program.constants import (
+        optimize_constants_with_fitness,
+        select_for_optimization,
+    )
+
+    if generation % config.constant_opt_interval != 0:
+        return population, fitnesses
+
+    indices = select_for_optimization(
+        population,
+        fitnesses,
+        config,
+        rng=rng,
+        max_evals=config.constant_opt_max_evals,
+        generation=generation,
+    )
+    population = list(population)
+    fitnesses = list(fitnesses)
+    unpriced: list[int] = []
+    for idx in indices:
+        optimized, optimized_fitness = optimize_constants_with_fitness(
+            population[idx], evaluator, context, config, rng
+        )
+        if optimized is population[idx]:
+            continue
+        population[idx] = optimized
+        if optimized_fitness is None:
+            unpriced.append(idx)
+        else:
+            fitnesses[idx] = optimized_fitness
+
+    if unpriced:
+        fitnesses = _refresh_fitnesses(
+            population, fitnesses, unpriced, evaluator, context, config
+        )
+    return population, fitnesses
+
+
+def _inject_seeds_stage(
+    population: list[Program],
+    raw_fitnesses: list[FitnessResult],
+    fitnesses: list[FitnessResult],
+    evaluator: FitnessEvaluator,
+    context: dict[str, np.ndarray],
+    config: GPConfig,
+    registry: PrimitiveRegistry,
+    rng: np.random.Generator,
+    generation: int,
+    seed_programs: Sequence[Program] | None,
+    *,
+    injection_event: int,
+    ranks: list[int] | None,
+    crowding: list[float] | None,
+    protected: set[int],
+) -> tuple[list[Program], list[FitnessResult], int]:
+    """Run periodic seed injection and evaluate only the injected programs."""
+    from liq.gp.evolution.injection import inject_seeds
+
+    new_population, injected_count = inject_seeds(
+        population,
+        fitnesses,
+        seed_programs,
+        config,
+        registry,
+        rng,
+        generation,
+        ranks=ranks,
+        crowding=crowding,
+        elite_indices=protected,
+        injection_event=injection_event,
+        output_type=population[0].output_type if population else None,
+    )
+    if injected_count == 0:
+        return population, raw_fitnesses, 0
+
+    changed = [
+        idx
+        for idx, (before, after) in enumerate(
+            zip(population, new_population, strict=True)
+        )
+        if before is not after
+    ]
+    if changed:
+        raw_fitnesses = _refresh_fitnesses(
+            new_population, raw_fitnesses, changed, evaluator, context, config
+        )
+    return new_population, raw_fitnesses, injected_count
+
+
+def _refresh_fitnesses(
+    population: list[Program],
+    fitnesses: list[FitnessResult],
+    indices: list[int],
+    evaluator: FitnessEvaluator,
+    context: dict[str, np.ndarray],
+    config: GPConfig,
+) -> list[FitnessResult]:
+    """Re-evaluate ``indices`` of ``population`` in one batch, returning a new list."""
+    subset, _ = _evaluate_population(
+        [population[i] for i in indices], evaluator, context, config
+    )
+    refreshed = list(fitnesses)
+    for idx, result in zip(indices, subset, strict=True):
+        refreshed[idx] = result
+    return refreshed
+
+
+def _breed(
+    parents: list[Program],
+    target_size: int,
+    registry: PrimitiveRegistry,
+    config: GPConfig,
+    rng: np.random.Generator,
+) -> list[Program]:
+    """Produce ``target_size`` constraint-satisfying offspring from ``parents``."""
+    offspring: list[Program] = []
+    pi = 0  # parent index
+
+    def next_parent() -> Program:
+        nonlocal pi
+        parent = parents[pi % len(parents)]
+        pi += 1
+        return parent
+
+    while len(offspring) < target_size:
+        op = select_operator(config, rng)
+
+        if op == "crossover":
+            p1 = next_parent()
+            p2 = next_parent()
+            if config.crossover_mode == "module_preserving":
+                children = module_preserving_crossover(
+                    p1,
+                    p2,
+                    registry,
+                    config.max_depth,
+                    rng,
+                    max_attempts=config.max_crossover_attempts,
+                )
+            else:
+                children = subtree_crossover(
+                    p1,
+                    p2,
+                    registry,
+                    config.max_depth,
+                    rng,
+                    max_attempts=config.max_crossover_attempts,
+                )
+        elif op == "subtree_mutation":
+            children = (
+                subtree_mutation(
+                    next_parent(),
+                    registry,
+                    config.max_depth,
+                    rng,
+                    terminal_probability=config.grow_terminal_probability,
+                ),
+            )
+        elif op == "point_mutation":
+            children = (point_mutation(next_parent(), registry, rng),)
+        elif op == "parameter_mutation":
+            children = (parameter_mutation(next_parent(), rng),)
+        elif op == "hoist_mutation":
+            children = (hoist_mutation(next_parent(), rng),)
+        else:  # pragma: no cover - select_operator only emits the names above
+            children = (next_parent(),)
+
+        for child in children:
+            if enforce_constraints(child, config):
+                offspring.append(child)
+
+    return offspring[:target_size]
 
 
 def _compute_stats(
@@ -661,7 +737,7 @@ def _validate_context(context: dict[str, np.ndarray]) -> None:
 
 def _evaluate_population(
     population: list[Program],
-    evaluator: object,
+    evaluator: FitnessEvaluator,
     context: dict[str, np.ndarray],
     config: GPConfig,
 ) -> tuple[list[FitnessResult], dict[str, object]]:
@@ -674,7 +750,7 @@ def _evaluate_population(
     scheduler = config.scheduler
     if not scheduler.enabled:
         return (
-            evaluator.evaluate(population, context),  # type: ignore[union-attr]
+            evaluator.evaluate(population, context),
             {
                 "mode": "direct",
                 "enabled": False,
@@ -689,7 +765,7 @@ def _evaluate_population(
 
 def _evaluate_population_bounded(
     population: list[Program],
-    evaluator: object,
+    evaluator: FitnessEvaluator,
     context: dict[str, np.ndarray],
     scheduler: SchedulerConfig,
 ) -> tuple[list[FitnessResult], dict[str, object]]:
@@ -713,7 +789,7 @@ def _evaluate_population_bounded(
             elapsed,
         )
         return (
-            evaluator.evaluate(population, context),  # type: ignore[union-attr]
+            evaluator.evaluate(population, context),
             {
                 "mode": "sequential_fallback",
                 "enabled": True,
@@ -773,7 +849,7 @@ def _evaluate_population_bounded(
         while cursor < len(chunks) or pending:
             while cursor < len(chunks) and len(pending) < scheduler.max_in_flight:
                 start_idx, batch = chunks[cursor]
-                fut = pool.submit(evaluator.evaluate, batch, context)  # type: ignore[union-attr]
+                fut = pool.submit(evaluator.evaluate, batch, context)
                 pending[fut] = (start_idx, len(batch))
                 submitted_chunks += 1
                 cursor += 1

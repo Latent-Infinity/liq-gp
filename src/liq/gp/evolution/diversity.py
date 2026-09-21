@@ -147,12 +147,17 @@ def deduplicate_population(
         if fp not in seen:
             seen.add(fp)
             new_population.append(prog)
-        else:
-            replacement = generate_grow(
-                registry, config.max_depth, prog.output_type, rng
-            )
-            if config.simplification_enabled:
-                replacement = simplify(replacement)
-            new_population.append(replacement)
+            continue
+
+        replacement = generate_grow(
+            registry,
+            config.max_depth,
+            prog.output_type,
+            rng,
+            terminal_probability=config.grow_terminal_probability,
+        )
+        if config.simplification_enabled:
+            replacement = simplify(replacement)
+        new_population.append(replacement)
 
     return new_population, unique_ratio

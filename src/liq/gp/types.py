@@ -140,17 +140,9 @@ class ParamSpec:
             object.__setattr__(self, "allowed_values", cleaned)
             if self.dtype is int and any(type(value) is not int for value in cleaned):
                 raise TypeError("all allowed_values must be int when dtype is int")
-            if self.dtype is float and any(
-                not isinstance(value, (int, float)) or isinstance(value, bool)
-                for value in cleaned
-            ):
-                raise TypeError(
-                    "allowed_values must be int or float values when dtype is float"
-                )
-            if self.dtype is float and not all(
-                isinstance(v, (int, float)) for v in cleaned
-            ):
-                raise TypeError("allowed_values must be numeric when dtype is float")
+            # Non-numeric and bool entries are already rejected by
+            # _normalize_allowed_values above, so no further element type
+            # check is reachable here.
             if self.default not in cleaned:
                 msg = f"default ({self.default}) must be in allowed_values"
                 raise ValueError(msg)
@@ -238,7 +230,8 @@ class SelectionContext:
     """Precomputed selection metadata for extension hooks.
 
     Contains enough NSGA-II state for hooks that want to avoid recomputing Pareto
-    rankings inside the parent-selection stage.
+    rankings inside the parent-selection stage.  ``fronts`` is populated in
+    every selection mode; ``ranks`` and ``crowding`` only under NSGA-II.
     """
 
     fronts: list[list[int]] | None = None
@@ -263,14 +256,14 @@ ParentSourceFn = Callable[
 class GenerationStats:
     """Per-generation statistics reported to callbacks (FR-5.5.3).
 
-    Fitness and size metrics describe the **evaluated** population at the
-    start of the generation, before seed injection and semantic deduplication.
-    These post-evaluation steps modify the population for the *next*
-    generation but do not retroactively change the statistics.
+    Fitness and size metrics describe the population that enters selection
+    this generation: after evaluation, constant optimization and seed
+    injection, but before variation and semantic deduplication (which build
+    the *next* generation's population).
 
     The ``injected_count`` field records how many programs were injected
-    *after* statistics were computed — it is additive metadata, not
-    reflected in the fitness or size fields.
+    this generation; those programs are included in the fitness and size
+    fields.
 
     Attributes:
         generation: Zero-based generation index.

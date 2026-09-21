@@ -14,6 +14,10 @@ from typing import TYPE_CHECKING, TypeGuard
 
 import numpy as np
 
+from liq.gp.config import (
+    DEFAULT_GROW_TERMINAL_PROBABILITY,
+    DEFAULT_MAX_CROSSOVER_ATTEMPTS,
+)
 from liq.gp.program.ast import (
     ConstantNode,
     FunctionNode,
@@ -378,8 +382,6 @@ def mine_regime_motifs(
 # Subtree crossover (FR-5.2.1)
 # ---------------------------------------------------------------------------
 
-_MAX_CROSSOVER_ATTEMPTS = 20
-
 
 def subtree_crossover(
     parent1: Program,
@@ -388,7 +390,7 @@ def subtree_crossover(
     max_depth: int,
     rng: np.random.Generator,
     *,
-    max_attempts: int = _MAX_CROSSOVER_ATTEMPTS,
+    max_attempts: int = DEFAULT_MAX_CROSSOVER_ATTEMPTS,
     block_constraint_telemetry: BlockConstraintTelemetry | None = None,
     enforce_block_constraints: bool = True,
 ) -> tuple[Program, Program]:
@@ -467,7 +469,7 @@ def module_preserving_crossover(
     max_depth: int,
     rng: np.random.Generator,
     *,
-    max_attempts: int = _MAX_CROSSOVER_ATTEMPTS,
+    max_attempts: int = DEFAULT_MAX_CROSSOVER_ATTEMPTS,
     block_constraint_telemetry: BlockConstraintTelemetry | None = None,
 ) -> tuple[Program, Program]:
     """Swap same-role module boundaries without breaking regime decomposition."""
@@ -527,6 +529,7 @@ def subtree_mutation(
     rng: np.random.Generator,
     *,
     max_attempts: int = 20,
+    terminal_probability: float | None = DEFAULT_GROW_TERMINAL_PROBABILITY,
     block_constraint_telemetry: BlockConstraintTelemetry | None = None,
     enforce_block_constraints: bool = True,
 ) -> Program:
@@ -560,6 +563,7 @@ def subtree_mutation(
             remaining_depth,
             target.output_type,
             rng,
+            terminal_probability=terminal_probability,
         )
         result = _replace_at_node(tree, target, replacement)
 

@@ -603,14 +603,15 @@ class TestEvolveWithSeeds:
         )
         assert isinstance(result, EvolutionResult)
 
-    def test_constant_optimization_updates_dedup_fingerprints(
+    def test_constant_optimization_precedes_semantic_fingerprinting(
         self, monkeypatch
     ) -> None:
+        """Fingerprints (stats and dedup) reflect post-optimization semantics."""
         reg = _make_registry()
         add_primitive = reg.get("add")
         config = _make_evolve_config(
             population_size=10,
-            generations=1,
+            generations=2,
             constant_opt_enabled=True,
             simplification_enabled=False,
         )
@@ -631,12 +632,11 @@ class TestEvolveWithSeeds:
             for i in range(config.population_size)
         ]
 
-        captured: dict[str, int | None] = {}
-
         def _select_all(
             _population: list[Program],
             _fitnesses: list[FitnessResult],
             _config: GPConfig,
+            **_kwargs: object,
         ) -> list[int]:
             return list(range(config.population_size))
 
@@ -646,14 +646,17 @@ class TestEvolveWithSeeds:
             _context: dict[str, np.ndarray],
             _config: GPConfig,
             _rng: np.random.Generator,
-        ) -> Program:
-            return canonical_program
+        ) -> tuple[Program, None]:
+            return canonical_program, None
 
-        # Spy on the fingerprints forwarded into dedup so we can verify they
-        # reflect post-optimization semantics.
+        # Spy on the population handed to dedup: its fingerprints must be
+        # computed for that population (either by dedup itself, or forwarded
+        # in matching order by the engine).
         import liq.gp.evolution.diversity as diversity_mod
+        from liq.gp.evolution.diversity import compute_fingerprint
 
         original_dedup = diversity_mod.deduplicate_population
+        mismatches: list[int] = []
 
         def _dedup_spy(
             population: list[Program],
@@ -663,9 +666,14 @@ class TestEvolveWithSeeds:
             dedup_rng: np.random.Generator,
             fingerprints: list[bytes] | None = None,
         ) -> tuple[list[Program], float]:
-            captured["fingerprint_count"] = (
-                None if fingerprints is None else len(set(fingerprints))
-            )
+            if fingerprints is not None:
+                expected = [
+                    compute_fingerprint(p, ref_context, dedup_config.semantic_precision)
+                    for p in population
+                ]
+                mismatches.append(
+                    sum(a != b for a, b in zip(fingerprints, expected, strict=True))
+                )
             return original_dedup(
                 population,
                 ref_context,
@@ -675,18 +683,11 @@ class TestEvolveWithSeeds:
                 fingerprints=fingerprints,
             )
 
-        # Configure constant optimization and dedup instrumentation.
         import liq.gp.program.constants as constants_mod
 
+        monkeypatch.setattr(constants_mod, "select_for_optimization", _select_all)
         monkeypatch.setattr(
-            constants_mod,
-            "select_for_optimization",
-            _select_all,
-        )
-        monkeypatch.setattr(
-            constants_mod,
-            "optimize_constants",
-            _flatten_to_canonical,
+            constants_mod, "optimize_constants_with_fitness", _flatten_to_canonical
         )
         monkeypatch.setattr(
             "liq.gp.evolution.engine.deduplicate_population",
@@ -701,7 +702,12 @@ class TestEvolveWithSeeds:
             seed_programs=seeds,
         )
         assert isinstance(result, EvolutionResult)
-        assert captured.get("fingerprint_count") == 1
+        # Every individual collapsed to the canonical program before the
+        # generation's fingerprints were taken.
+        assert result.fitness_history[0].unique_semantics_ratio == pytest.approx(
+            1 / config.population_size
+        )
+        assert not any(mismatches)
 
     def test_evolve_with_seeds_and_semantic_dedup(self) -> None:
         reg = _make_registry()

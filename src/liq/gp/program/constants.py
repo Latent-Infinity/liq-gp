@@ -7,6 +7,7 @@ AST (immutability preserved).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import time
@@ -25,7 +26,8 @@ from liq.gp.program.ast import (
 
 if TYPE_CHECKING:
     from liq.gp.config import GPConfig
-    from liq.gp.types import FitnessResult
+
+from liq.gp.types import FitnessResult
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +214,11 @@ def optimize_constants(
     config: GPConfig,
     rng: np.random.Generator,
 ) -> Program:
-    """Optimize ConstantNode values via Nelder-Mead (FR-6).
+    """Optimize ConstantNode values via scipy (FR-6).
 
-    Uses ``scipy.optimize.minimize`` with ``method='Nelder-Mead'``.
-    Bounded by ``config.constant_opt_max_iter`` and
-    ``config.constant_opt_max_time_seconds`` (whichever comes first).
+    Bounded by ``config.constant_opt_max_iter``,
+    ``config.constant_opt_max_time_seconds`` and
+    ``config.constant_opt_max_program_evals`` (whichever comes first).
 
     If the program has no constants, it is returned unchanged (no-op).
     Any exception during optimization is caught, logged, and the original
@@ -234,9 +236,27 @@ def optimize_constants(
         A new Program with optimized constants, or the original if
         optimization fails or has no constants to optimize.
     """
+    return optimize_constants_with_fitness(program, evaluator, context, config, rng)[0]
+
+
+def optimize_constants_with_fitness(
+    program: Program,
+    evaluator: Any,
+    context: dict[str, np.ndarray],
+    config: GPConfig,
+    rng: np.random.Generator,
+) -> tuple[Program, FitnessResult | None]:
+    """Optimize constants and also return the winner's fitness.
+
+    The optimizer already evaluated the constants it returns, so callers can
+    reuse that :class:`FitnessResult` instead of re-evaluating the program.
+    The fitness is ``None`` when the program was left unchanged (no constants,
+    no improvement, or a failed optimization), in which case the caller's
+    existing fitness for the program is still valid.
+    """
     current_constants = extract_constants(program)
     if not current_constants:
-        return program
+        return program, None
 
     try:
         return _run_optimization(
@@ -252,7 +272,7 @@ def optimize_constants(
             "Constant optimization failed; keeping original constants",
             exc_info=True,
         )
-        return program
+        return program, None
 
 
 def select_for_optimization(
@@ -447,8 +467,12 @@ def _run_optimization(
     config: GPConfig,
     rng: np.random.Generator,
     initial_constants: list[float],
-) -> Program:
-    """Run scipy optimization with deterministic time/iteration limits."""
+) -> tuple[Program, FitnessResult | None]:
+    """Run scipy optimization with deterministic time/iteration limits.
+
+    Returns the (possibly unchanged) program and, when the constants changed,
+    the ``FitnessResult`` already computed for the winning point.
+    """
     roles = infer_constant_roles(program)
     if len(roles) != len(initial_constants):
         raise ValueError(
@@ -472,6 +496,25 @@ def _run_optimization(
     # Track the best result seen so far
     best_loss = [float("inf")]
     best_x = [x0.copy()]
+    best_result: list[FitnessResult | None] = [None]
+    evals_used = [0]
+    max_program_evals = config.constant_opt_max_program_evals
+
+    def _loss_of(params: np.ndarray) -> tuple[float, FitnessResult]:
+        evals_used[0] += 1
+        candidate = inject_constants(program, params.tolist())
+        result = evaluator.evaluate([candidate], context)[0]
+        fitness_value = result.objectives[0]
+        loss = -fitness_value if maximize else fitness_value
+        return (1e18 if np.isnan(loss) else float(loss)), result
+
+    # Baseline: the unperturbed program with role bounds applied.  Bounds are
+    # a hard constraint, so the baseline may already differ from the input;
+    # optimisation only wins if it beats this point.
+    baseline_x = _coerce_initial_constants_with_bounds(
+        np.array(initial_constants, dtype=np.float64), bounds
+    )
+    baseline_loss, _baseline_result = _loss_of(baseline_x)
 
     def time_callback(_xk: np.ndarray) -> bool:
         """Return True to stop optimization when time limit exceeded."""
@@ -485,29 +528,28 @@ def _run_optimization(
         elapsed = time.monotonic() - start_time
         if elapsed >= max_time:
             raise _TimeLimitReached
+        # The evaluation budget bounds gradient-hungry optimizers, whose
+        # finite differences cost 2*n_constants evaluations per iteration.
+        if max_program_evals is not None and evals_used[0] >= max_program_evals:
+            raise _TimeLimitReached
 
-        candidate = inject_constants(program, params.tolist())
-        results = evaluator.evaluate([candidate], context)
-        fitness_value = results[0].objectives[0]
-
-        loss = -fitness_value if maximize else fitness_value
-
-        # Handle NaN by returning a large penalty
-        if np.isnan(loss):
-            return 1e18
+        # Role bounds are a hard constraint, so evaluate (and remember) only
+        # in-bounds points even when the optimizer probes outside them.
+        bounded = _coerce_initial_constants_with_bounds(params, bounds)
+        loss, result = _loss_of(bounded)
 
         # Track best
         if loss < best_loss[0]:
             best_loss[0] = loss
-            best_x[0] = params.copy()
+            best_x[0] = bounded.copy()
+            best_result[0] = result
 
         return loss
 
-    # FR-6.2 suggests L-BFGS-B with Nelder-Mead fallback.
-    # We attempt L-BFGS-B first for faster convergence on smooth objectives,
-    # then fall back to Nelder-Mead if L-BFGS-B fails.
+    # FR-6.2 suggests L-BFGS-B with Nelder-Mead fallback.  L-BFGS-B converges
+    # faster on smooth objectives; the derivative-free simplex is the fallback.
     try:
-        optimized_x = _minimize_constants(
+        _minimize_constants(
             objective,
             x0,
             time_callback,
@@ -517,26 +559,28 @@ def _run_optimization(
             best_x=best_x,
         )
     except _TimeLimitReached:
-        optimized_x = best_x[0].tolist()
+        pass
     except Exception:
-        try:
-            optimized_x = _minimize_constants(
+        with contextlib.suppress(_TimeLimitReached):
+            _minimize_constants(
                 objective,
                 x0,
                 time_callback,
                 max_iter=config.constant_opt_max_iter,
                 method="Nelder-Mead",
-                bounds=None,
+                bounds=bounds,
                 best_x=best_x,
             )
-        except _TimeLimitReached:
-            optimized_x = best_x[0].tolist()
 
-    # Use the best constants found (either optimizer output or tracked best)
-    if optimized_x is None:
-        optimized_x = best_x[0].tolist()
-
-    return inject_constants(program, optimized_x)
+    # Never regress: on non-smooth objectives the optimizer's endpoint (and
+    # the perturbed start) can be worse than the untouched program.  Every
+    # candidate passed through ``objective``, so the tracked best dominates
+    # whatever the optimizer reported.
+    if best_loss[0] >= baseline_loss:
+        if np.array_equal(baseline_x, np.asarray(initial_constants)):
+            return program, None
+        return inject_constants(program, baseline_x.tolist()), _baseline_result
+    return inject_constants(program, best_x[0].tolist()), best_result[0]
 
 
 def _minimize_constants(
@@ -553,25 +597,18 @@ def _minimize_constants(
 
     Returns the best constants seen during the pass, or raises on failure.
     """
-    minimize_kwargs = {
-        "method": method,
-        "options": {
-            "maxiter": max_iter,
-        },
-    }
+    options: dict[str, Any] = {"maxiter": max_iter}
+    minimize_kwargs: dict[str, Any] = {"method": method, "options": options}
 
     if method == "L-BFGS-B":
-        minimize_kwargs["options"]["ftol"] = 1e-8
+        options["ftol"] = 1e-8
     elif method == "Nelder-Mead":
-        minimize_kwargs["options"].update(
-            {
-                "xatol": 1e-8,
-                "fatol": 1e-8,
-                "adaptive": True,
-            }
-        )
+        options.update({"xatol": 1e-8, "fatol": 1e-8, "adaptive": True})
 
-    if method == "L-BFGS-B" and bounds is not None:
+    # Both L-BFGS-B and Nelder-Mead accept bounds in supported scipy versions.
+    if bounds is not None and any(
+        lower is not None or upper is not None for lower, upper in bounds
+    ):
         minimize_kwargs["bounds"] = bounds
 
     result = minimize(

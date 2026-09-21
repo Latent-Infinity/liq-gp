@@ -13,6 +13,8 @@ from collections import defaultdict
 from functools import cmp_to_key
 from typing import TYPE_CHECKING, Literal, cast
 
+import numpy as np
+
 ObjectiveDirection = Literal["maximize", "minimize"]
 
 
@@ -386,53 +388,32 @@ def non_dominated_sort(
         return []
 
     # Convert to "the higher the better" by negating minimised objectives.
-    signs = [1.0 if d == "maximize" else -1.0 for d in directions]
-    objs = [
-        tuple(s * v for s, v in zip(signs, f.objectives, strict=True))
-        for f in fitnesses
-    ]
+    signs = np.array(
+        [1.0 if d == "maximize" else -1.0 for d in directions], dtype=np.float64
+    )
+    objs = np.array([f.objectives for f in fitnesses], dtype=np.float64) * signs
 
-    # domination_count[i] = how many individuals dominate i
-    domination_count = [0] * n
-    # dominated_set[i] = set of individuals i dominates
-    dominated_set: list[list[int]] = [[] for _ in range(n)]
+    # dominates[i, j] is True when i Pareto-dominates j.  NaN compares False
+    # on both sides, so NaN individuals neither dominate nor are dominated.
+    left = objs[:, None, :]
+    right = objs[None, :, :]
+    dominates = (left >= right).all(axis=2) & (left > right).any(axis=2)
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            i_dom_j = _dominates(objs[i], objs[j])
-            j_dom_i = _dominates(objs[j], objs[i])
-            if i_dom_j:
-                dominated_set[i].append(j)
-                domination_count[j] += 1
-            elif j_dom_i:
-                dominated_set[j].append(i)
-                domination_count[i] += 1
+    # domination_count[j] = how many individuals dominate j
+    domination_count = dominates.sum(axis=0)
+    remaining = np.ones(n, dtype=bool)
 
     fronts: list[list[int]] = []
-    current_front = [i for i in range(n) if domination_count[i] == 0]
-
-    while current_front:
-        fronts.append(current_front)
-        next_front: list[int] = []
-        for i in current_front:
-            for j in dominated_set[i]:
-                domination_count[j] -= 1
-                if domination_count[j] == 0:
-                    next_front.append(j)
-        current_front = next_front
+    while remaining.any():
+        front_mask = remaining & (domination_count == 0)
+        if not front_mask.any():  # pragma: no cover - defensive against NaN cycles
+            front_mask = remaining
+        front = np.flatnonzero(front_mask)
+        fronts.append(front.tolist())
+        remaining[front] = False
+        domination_count -= dominates[front].sum(axis=0)
 
     return fronts
-
-
-def _dominates(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
-    """Return True if *a* Pareto-dominates *b* (all >= and at least one >)."""
-    dominated = False
-    for ai, bi in zip(a, b, strict=True):
-        if ai < bi:
-            return False
-        if ai > bi:
-            dominated = True
-    return dominated
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +670,30 @@ def get_elites(
         Elite programs (length <= elitism_count, or <= first-front size
         for NSGA-II).
     """
+    indices = get_elite_indices(
+        population,
+        fitnesses,
+        config,
+        fronts=fronts,
+        ranks=ranks,
+        crowding=crowding,
+    )
+    return [population[i] for i in indices]
+
+
+def get_elite_indices(
+    population: list[Program],
+    fitnesses: list[FitnessResult],
+    config: GPConfig,
+    fronts: list[list[int]] | None = None,
+    ranks: list[int] | None = None,
+    crowding: list[float] | None = None,
+) -> list[int]:
+    """Return population indices of the elites (see :func:`get_elites`).
+
+    Exposing indices lets callers carry the elites' fitness forward instead
+    of re-evaluating them.
+    """
     if config.elitism_count == 0:
         return []
 
@@ -708,8 +713,8 @@ def _tournament_elites(
     population: list[Program],
     fitnesses: list[FitnessResult],
     config: GPConfig,
-) -> list[Program]:
-    """Top-N elites by first objective for single-objective mode."""
+) -> list[int]:
+    """Top-N elite indices by first objective for single-objective mode."""
     directions = _effective_directions(
         fitnesses, list(config.fitness.objective_directions)
     )
@@ -727,7 +732,7 @@ def _tournament_elites(
         return 0
 
     indices = sorted(range(len(population)), key=cmp_to_key(_compare_indices))
-    return [population[i] for i in indices[: config.elitism_count]]
+    return indices[: config.elitism_count]
 
 
 def _nsga2_elites(
@@ -737,8 +742,8 @@ def _nsga2_elites(
     fronts: list[list[int]] | None = None,
     ranks: list[int] | None = None,
     crowding: list[float] | None = None,
-) -> list[Program]:
-    """First Pareto front elites for multi-objective mode."""
+) -> list[int]:
+    """First Pareto front elite indices for multi-objective mode."""
     if fronts is None or ranks is None or crowding is None:
         fronts, ranks, crowding = compute_nsga2_rankings(fitnesses, config)
     elif len(ranks) != len(population) or len(crowding) != len(population):
@@ -748,13 +753,13 @@ def _nsga2_elites(
         ranks = [0] * len(population)
         crowding = [0.0] * len(population)
 
-    elites: list[Program] = []
+    elites: list[int] = []
     for front in fronts:
         if len(elites) >= config.elitism_count:
             break
         remaining = config.elitism_count - len(elites)
         if len(front) <= remaining:
-            elites.extend(population[i] for i in front)
+            elites.extend(front)
         else:
             # Sort by crowding distance (descending) and take the top
             paired = sorted(
@@ -762,7 +767,7 @@ def _nsga2_elites(
                 key=lambda x: x[1],
                 reverse=True,
             )
-            elites.extend(population[idx] for idx, _ in paired[:remaining])
+            elites.extend(idx for idx, _ in paired[:remaining])
 
     return elites
 

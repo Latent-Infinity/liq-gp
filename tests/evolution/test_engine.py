@@ -295,14 +295,17 @@ class TestEvolveParentSourceHook:
             parent_source=TrackingParentSource(),
         )
 
-        assert len(calls) == generations
+        # The final reported generation is evaluated but not bred.
+        assert len(calls) == generations - 1
         assert all(
             pop_size == config.population_size
             and fit_count == config.population_size
             and target == target_size
             for pop_size, fit_count, target, flags in calls
         )
-        assert all(flags == (False, False, False) for _, _, _, flags in calls)
+        # Pareto fronts are always available (they back ``pareto_front_size``);
+        # ranks and crowding distances are NSGA-II only.
+        assert all(flags == (True, False, False) for _, _, _, flags in calls)
 
     def test_parent_source_receives_nsga2_selection_context(self) -> None:
         from liq.gp.evolution.engine import evolve
@@ -356,7 +359,7 @@ class TestEvolveParentSourceHook:
         from liq.gp.evolution.engine import evolve
 
         reg = _make_registry()
-        config = _make_config(generations=1)
+        config = _make_config(generations=2)
         context = _make_context()
 
         def bad_parent_source(
@@ -419,7 +422,7 @@ class TestEvolveParentSourceHook:
             SimpleFitnessEvaluator(context),
             context,
         )
-        assert calls["select"] == config.generations
+        assert calls["select"] == config.generations - 1
 
     def test_parent_source_can_return_duplicates(
         self, monkeypatch: pytest.MonkeyPatch
@@ -430,7 +433,7 @@ class TestEvolveParentSourceHook:
 
         reg = _make_registry()
         config = _make_config(
-            generations=1,
+            generations=2,
             population_size=10,
             elitism_count=6,
             crossover_rate=1.0,
@@ -468,7 +471,7 @@ class TestEvolveParentSourceHook:
             registry: object,
             max_depth: int,
             rng: np.random.Generator,
-            max_attempts: int,
+            **_kwargs: object,
         ) -> tuple[Program, Program]:
             crossover_pairs.append((id(p1), id(p2)))
             return p1, p1
@@ -686,6 +689,7 @@ class TestConstantOptimizationBudget:
             config: GPConfig,
             rng: np.random.Generator,
             max_evals: int | None = None,
+            generation: int | None = None,
         ) -> list[int]:
             effective_budget = (
                 max_evals if max_evals is not None else config.constant_opt_max_evals
@@ -702,10 +706,10 @@ class TestConstantOptimizationBudget:
             context: dict[str, np.ndarray],
             config: GPConfig,
             rng: np.random.Generator,
-        ) -> Program:
+        ) -> tuple[Program, None]:
             nonlocal optimize_calls
             optimize_calls += 1
-            return program
+            return program, None
 
         import liq.gp.program.constants as constants_module
 
@@ -716,7 +720,7 @@ class TestConstantOptimizationBudget:
         )
         monkeypatch.setattr(
             constants_module,
-            "optimize_constants",
+            "optimize_constants_with_fitness",
             fake_optimize_constants,
         )
 

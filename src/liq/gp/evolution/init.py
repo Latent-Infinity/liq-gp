@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from liq.gp.config import DEFAULT_GROW_TERMINAL_PROBABILITY
 from liq.gp.program.ast import (
     ConstantNode,
     FunctionNode,
@@ -133,16 +134,42 @@ def generate_full(
     return _make_function_node(prim, children, rng)
 
 
+def _resolve_terminal_probability(
+    registry: PrimitiveRegistry,
+    output_type: GPType,
+    terminal_probability: float | None,
+) -> float:
+    """Return the terminal-selection probability for one ``grow`` branch.
+
+    ``None`` requests the classic registry-proportional rate
+    ``|terminals| / (|terminals| + |functions|)``; a float is used as-is.
+    """
+    if terminal_probability is not None:
+        return terminal_probability
+
+    n_terminals = len(registry.terminals(output_type=output_type))
+    n_functions = len(registry.functions(output_type=output_type))
+    total = n_terminals + n_functions
+    if total == 0:  # pragma: no cover - guarded by callers
+        return 1.0
+    return n_terminals / total
+
+
 def generate_grow(
     registry: PrimitiveRegistry,
     max_depth: int,
     output_type: GPType,
     rng: np.random.Generator,
+    *,
+    terminal_probability: float | None = DEFAULT_GROW_TERMINAL_PROBABILITY,
 ) -> Program:
     """Generate a 'grow' tree where branches terminate at random depths (FR-5.1.1).
 
     At any depth < max_depth, randomly choose between terminal and function.
     At depth == max_depth, always pick a terminal.
+
+    ``terminal_probability`` is the chance of stopping at a terminal at each
+    depth; ``None`` derives it from the registry's terminal/function mix.
     """
     if max_depth == 0:
         return _sample_terminal(registry, output_type, rng)
@@ -154,12 +181,20 @@ def generate_grow(
 
     # Probability of choosing a terminal at this depth
     # (higher probability at shallow depths gives variety)
-    if rng.random() < 0.3:
+    if rng.random() < _resolve_terminal_probability(
+        registry, output_type, terminal_probability
+    ):
         return _sample_terminal(registry, output_type, rng)
 
     prim = functions[int(rng.integers(len(functions)))]
     children = tuple(
-        generate_grow(registry, max_depth - 1, child_type, rng)
+        generate_grow(
+            registry,
+            max_depth - 1,
+            child_type,
+            rng,
+            terminal_probability=terminal_probability,
+        )
         for child_type in prim.input_types
     )
     return _make_function_node(prim, children, rng)
@@ -205,7 +240,13 @@ def initialize_population(
         if i % 2 == 0:
             tree = generate_full(registry, depth, output_type, rng)
         else:
-            tree = generate_grow(registry, depth, output_type, rng)
+            tree = generate_grow(
+                registry,
+                depth,
+                output_type,
+                rng,
+                terminal_probability=config.grow_terminal_probability,
+            )
         population.append(tree)
 
     return population

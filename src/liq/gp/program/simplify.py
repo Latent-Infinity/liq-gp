@@ -242,10 +242,9 @@ def _constant_folding(node: Program) -> Program | None:
     if not isinstance(node, FunctionNode):
         return None
 
-    if not all(isinstance(c, ConstantNode) for c in node.children):
+    args = [c.value for c in node.children if isinstance(c, ConstantNode)]
+    if len(args) != len(node.children):
         return None
-
-    args = [c.value for c in node.children]  # type: ignore[union-attr]
     try:
         result = node.primitive.callable(*args)
     except Exception:  # noqa: BLE001 – guard against div-by-zero etc.

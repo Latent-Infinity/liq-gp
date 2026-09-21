@@ -296,7 +296,10 @@ class QDArchive:
             self.objective_directions,
             len(all_entries[0].objectives),
         )
-        max_first: bool = directions[0] == "maximize"
+        # Entries may carry an empty objectives tuple (``insert`` accepts one),
+        # in which case there is no direction to read; default to maximize,
+        # matching _parse_objective_directions' padding policy.
+        max_first: bool = not directions or directions[0] == "maximize"
 
         for _ in range(n):
             underfilled = [

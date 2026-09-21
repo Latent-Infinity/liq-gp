@@ -50,8 +50,9 @@ def apply_parsimony(
         Append ``-program.size`` as a separate minimisation objective for
         NSGA-II multi-objective selection.
     ``"linear"``
-        Subtract ``parsimony_coefficient * program.size`` from the first
-        objective.
+        Penalise the first objective by ``parsimony_coefficient * program.size``
+        in the direction that makes it worse (subtracted when maximising,
+        added when minimising).
     ``"size_diversity"``
         Add a size-density objective rewarding under-represented tree sizes.
     """
@@ -90,11 +91,13 @@ def apply_parsimony(
         ]
 
     if mode == "linear":
-        coeff = config.parsimony_coefficient
+        # Penalise size in whichever direction makes the primary objective worse.
+        sign = -1.0 if config.fitness.objective_directions[0] == "maximize" else 1.0
+        coeff = sign * config.parsimony_coefficient
         return [
             FitnessResult(
                 objectives=(
-                    (fr.objectives[0] - coeff * prog.size,) + fr.objectives[1:]
+                    (fr.objectives[0] + coeff * prog.size,) + fr.objectives[1:]
                 ),
                 metadata={
                     **fr.metadata,

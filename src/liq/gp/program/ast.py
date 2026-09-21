@@ -48,18 +48,19 @@ class TerminalNode:
         return hash(("TerminalNode", self.name, self.output_type))
 
 
+def _default_constant_type() -> GPType:
+    """Constants default to ``Series``; imported lazily to avoid an import cycle."""
+    from liq.gp.types import Series
+
+    return Series
+
+
 @dataclass(frozen=True, eq=False)
 class ConstantNode:
     """Stores a literal float value (ephemeral random constant) (FR-2.2)."""
 
     value: float
-    output_type: GPType = field(default=None)  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.output_type is None:
-            from liq.gp.types import Series
-
-            object.__setattr__(self, "output_type", Series)
+    output_type: GPType = field(default_factory=_default_constant_type)
 
     @property
     def depth(self) -> int:

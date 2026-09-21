@@ -14,6 +14,19 @@ from pydantic import BaseModel, model_validator
 
 from liq.gp.errors import ConfigurationError
 
+#: Default retry budget for type/depth-constrained crossover point sampling.
+DEFAULT_MAX_CROSSOVER_ATTEMPTS = 20
+
+#: Default probability of terminating a ``grow`` branch at a terminal.
+#: ``None`` selects the registry-proportional rate instead.
+#:
+#: ``0.3`` is a historical value retained for behaviour preservation, not a
+#: tuned optimum.  On symbolic-regression benchmarks ``0.5`` measured roughly
+#: 15-20% smaller programs and ~26% lower wall clock with no detected change in
+#: solution quality, though that comparison could not rule out a small quality
+#: loss.  Consumers are free to opt in.
+DEFAULT_GROW_TERMINAL_PROBABILITY = 0.3
+
 
 class FitnessConfig(BaseModel, frozen=True):
     """Configuration for fitness evaluation.
@@ -213,8 +226,11 @@ class GPConfig(BaseModel, frozen=True):
     point_mutation_rate: float = 0.1
     parameter_mutation_rate: float = 0.05
     hoist_mutation_rate: float = 0.05
-    max_crossover_attempts: int = 20
+    max_crossover_attempts: int = DEFAULT_MAX_CROSSOVER_ATTEMPTS
     crossover_mode: Literal["standard", "module_preserving"] = "standard"
+
+    # Initialization
+    grow_terminal_probability: float | None = DEFAULT_GROW_TERMINAL_PROBABILITY
 
     # Selection
     tournament_size: int = 5
@@ -240,6 +256,8 @@ class GPConfig(BaseModel, frozen=True):
     constant_opt_top_k: float = 0.1
     constant_opt_mode: Literal["top_k", "probabilistic"] = "top_k"
     constant_opt_max_evals: int | None = None
+    constant_opt_max_program_evals: int | None = None
+    constant_opt_interval: int = 1
     constant_opt_max_iter: int = 50
     constant_opt_max_time_seconds: float = 1.0
     constant_opt_role_schedule: ConstantRoleOptimizationSchedule = (
@@ -314,6 +332,13 @@ class GPConfig(BaseModel, frozen=True):
         if self.max_crossover_attempts < 1:
             raise ConfigurationError("max_crossover_attempts must be >= 1")
 
+        if self.grow_terminal_probability is not None and not (
+            0.0 <= self.grow_terminal_probability <= 1.0
+        ):
+            raise ConfigurationError(
+                "grow_terminal_probability must be in [0.0, 1.0] or None"
+            )
+
         # Elitism
         if self.elitism_count < 0:
             raise ConfigurationError("elitism_count must be >= 0")
@@ -329,6 +354,15 @@ class GPConfig(BaseModel, frozen=True):
             )
         if self.constant_opt_max_evals is not None and self.constant_opt_max_evals < 1:
             raise ConfigurationError("constant_opt_max_evals must be >= 1 when set")
+        if (
+            self.constant_opt_max_program_evals is not None
+            and self.constant_opt_max_program_evals < 1
+        ):
+            raise ConfigurationError(
+                "constant_opt_max_program_evals must be >= 1 when set"
+            )
+        if self.constant_opt_interval < 1:
+            raise ConfigurationError("constant_opt_interval must be >= 1")
         if self.constant_opt_max_time_seconds <= 0:
             raise ConfigurationError("constant_opt_max_time_seconds must be > 0")
 

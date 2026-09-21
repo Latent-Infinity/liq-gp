@@ -20,8 +20,11 @@ class FitnessEvaluator(Protocol):
     """Consumer-provided fitness evaluation (FR-5.4.1).
 
     Implement this protocol in your domain-specific evaluator.  The
-    :func:`~liq.gp.evolve` function calls ``evaluate()`` once per
-    generation (and once more for constant optimisation when enabled).
+    :func:`~liq.gp.evolve` function calls ``evaluate()`` once per generation
+    with the full population, plus small follow-up batches for programs
+    changed by constant optimisation or seed injection.  Constant
+    optimisation itself probes candidates one program at a time, so
+    ``evaluate()`` must accept lists of any length.
 
     Example::
 
