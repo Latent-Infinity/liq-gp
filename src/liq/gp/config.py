@@ -346,7 +346,11 @@ class GPConfig(BaseModel, frozen=True):
             raise ConfigurationError("elitism_count must be < population_size")
 
         # Constant opt
-        if self.constant_opt_top_k <= 0.0 or self.constant_opt_top_k > 1.0:
+        if (
+            not math.isfinite(self.constant_opt_top_k)
+            or self.constant_opt_top_k <= 0.0
+            or self.constant_opt_top_k > 1.0
+        ):
             raise ConfigurationError("constant_opt_top_k must be in (0.0, 1.0]")
         if self.constant_opt_mode not in {"top_k", "probabilistic"}:
             raise ConfigurationError(

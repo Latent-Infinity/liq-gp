@@ -155,6 +155,11 @@ class TestGPConfigValidation:
         with pytest.raises(ConfigurationError, match="constant_opt_top_k"):
             GPConfig(constant_opt_top_k=1.1)
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+    def test_constant_opt_top_k_must_be_finite(self, value: float) -> None:
+        with pytest.raises(ConfigurationError, match="constant_opt_top_k"):
+            GPConfig(constant_opt_top_k=value)
+
     def test_constant_opt_top_k_one_valid(self) -> None:
         cfg = GPConfig(constant_opt_top_k=1.0)
         assert cfg.constant_opt_top_k == 1.0
