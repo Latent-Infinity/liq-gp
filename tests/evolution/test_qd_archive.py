@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from liq.gp.evolution.qd_archive import QDArchive
 from liq.gp.program.ast import Program, TerminalNode
 from liq.gp.types import Series
@@ -165,3 +167,61 @@ def test_deterministic_sampling_given_seed() -> None:
     s_a = archive_a.sample(5, rng_a, coverage_weight=0.3)
     s_b = archive_b.sample(5, rng_b, coverage_weight=0.3)
     assert [p.name for p in s_a] == [p.name for p in s_b]  # type: ignore[attr-defined]
+
+
+def _make_four_axis_archive() -> QDArchive:
+    return QDArchive(
+        n_dims=4,
+        bins_per_dim=(1, 3, 16, 9),
+        descriptor_bounds=((0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (-2.0, 2.0)),
+        objective_directions=["maximize"],
+        bin_capacity=1,
+    )
+
+
+def test_cell_of_names_the_cell_insert_places_an_entry_in() -> None:
+    """``cell_of`` is the archive's own binning, read without inserting."""
+    archive = _make_four_axis_archive()
+    descriptors = [
+        (0.5, 0.0, 0.0, -2.0),  # every lower bound
+        (0.5, 1.0, 1.0, 2.0),  # every upper bound, the last cell
+        (0.5, 0.34, 0.5, 0.0),
+        (0.5, 0.99, 0.0625, 1.9),
+        (0.5, 0.2, 0.93, -0.3),
+    ]
+    for index, descriptor in enumerate(descriptors):
+        archive.insert(_program(f"p{index}"), (float(index),), descriptor)
+
+    payload = archive.to_dict()
+    entries = payload["entries"]
+    assert isinstance(entries, list)
+    assert len(entries) == len(descriptors)
+    for entry in entries:
+        assert archive.cell_of(tuple(entry["descriptors"])) == tuple(entry["bin"])
+    assert archive.cell_of((0.5, 1.0, 1.0, 2.0)) == (0, 2, 15, 8)
+    assert archive.cell_of((0.5, 0.0, 0.0, -2.0)) == (0, 0, 0, 0)
+
+
+def test_cell_of_refuses_what_insert_refuses() -> None:
+    """A wrong length or an out-of-bounds value raises, as ``insert`` does."""
+    archive = _make_four_axis_archive()
+    with pytest.raises(ValueError, match="n_dims"):
+        archive.cell_of((0.5, 0.5, 0.5))
+    with pytest.raises(ValueError, match="outside bounds"):
+        archive.cell_of((0.5, 1.01, 0.5, 0.0))
+    with pytest.raises(ValueError, match="outside bounds"):
+        archive.cell_of((0.5, 0.5, 0.5, -2.5))
+
+
+def test_cell_of_changes_nothing_in_the_archive() -> None:
+    """Reading a cell neither fills a bin nor alters the payload."""
+    archive = _make_four_axis_archive()
+    archive.insert(_program("only"), (1.0,), (0.5, 0.5, 0.5, 0.0))
+    before = archive.to_dict()
+    filled = archive.filled_bins
+
+    archive.cell_of((0.5, 0.1, 0.9, 1.5))
+    archive.cell_of([0.5, 0.5, 0.5, 0.0])
+
+    assert archive.filled_bins == filled
+    assert archive.to_dict() == before

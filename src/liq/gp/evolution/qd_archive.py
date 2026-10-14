@@ -167,6 +167,15 @@ class QDArchive:
             )
         )
 
+    def cell_of(self, descriptors: tuple[float, ...] | list[float]) -> tuple[int, ...]:
+        """Return the bin ``insert`` would place an entry with these descriptors in.
+
+        Reads the archive's binning without inserting anything. Raises
+        ``ValueError`` for a wrong length or an out-of-bounds value, exactly as
+        ``insert`` does.
+        """
+        return self._to_bin(self._as_float_tuple(descriptors))
+
     @staticmethod
     def _objective_values(entry: QDEntry) -> tuple[float, ...]:
         return entry.objectives
