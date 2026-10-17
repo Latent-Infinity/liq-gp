@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from liq.gp.evolution.qd_archive import QDArchive
@@ -211,6 +213,19 @@ def test_cell_of_refuses_what_insert_refuses() -> None:
         archive.cell_of((0.5, 1.01, 0.5, 0.0))
     with pytest.raises(ValueError, match="outside bounds"):
         archive.cell_of((0.5, 0.5, 0.5, -2.5))
+
+
+@pytest.mark.parametrize("axis", [0, 1, 2, 3])
+def test_cell_of_refuses_a_nan_coordinate(axis: int) -> None:
+    """A NaN on any axis is refused, never binned at a bound."""
+    archive = _make_four_axis_archive()
+    descriptor = [0.5, 0.5, 0.5, 0.0]
+    descriptor[axis] = math.nan
+    with pytest.raises(ValueError, match="outside bounds"):
+        archive.cell_of(tuple(descriptor))
+    with pytest.raises(ValueError, match="outside bounds"):
+        archive.insert(_program("nan"), (1.0,), tuple(descriptor))
+    assert archive.filled_bins == 0
 
 
 def test_cell_of_changes_nothing_in_the_archive() -> None:
